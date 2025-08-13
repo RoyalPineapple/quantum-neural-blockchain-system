@@ -1,0 +1,50 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: Elasticsearch
+    type: elasticsearch
+    access: proxy
+    url: http://elasticsearch:9200
+    database: "[quantum-monitoring-]YYYY.MM.DD"
+    jsonData:
+      esVersion: 70
+      timeField: "@timestamp"
+      interval: Daily
+
+dashboards:
+  - name: 'Quantum System Dashboard'
+    folder: 'Quantum Neural Blockchain'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/quantum_system.json
+
+  - name: 'Neural Network Dashboard'
+    folder: 'Quantum Neural Blockchain'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/neural_network.json
+
+  - name: 'Blockchain Dashboard'
+    folder: 'Quantum Neural Blockchain'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/blockchain.json
+
+  - name: 'Financial System Dashboard'
+    folder: 'Quantum Neural Blockchain'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/financial_system.json
+
+  - name: 'System Performance Dashboard'
+    folder: 'Quantum Neural Blockchain'
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards/system_performance.json

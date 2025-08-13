@@ -1,0 +1,202 @@
+version: '3.8'
+
+services:
+  quantum_service:
+    build:
+      context: .
+      dockerfile: docker/quantum/Dockerfile
+    image: quantum-neural-blockchain/quantum:latest
+    environment:
+      - N_QUBITS=8
+      - ERROR_THRESHOLD=0.001
+      - CORRECTION_ROUNDS=3
+    volumes:
+      - ./data/quantum:/data
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  neural_service:
+    build:
+      context: .
+      dockerfile: docker/neural/Dockerfile
+    image: quantum-neural-blockchain/neural:latest
+    environment:
+      - BATCH_SIZE=32
+      - LEARNING_RATE=0.001
+      - N_LAYERS=4
+    volumes:
+      - ./data/neural:/data
+    ports:
+      - "5001:5001"
+    depends_on:
+      - quantum_service
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  blockchain_service:
+    build:
+      context: .
+      dockerfile: docker/blockchain/Dockerfile
+    image: quantum-neural-blockchain/blockchain:latest
+    environment:
+      - DIFFICULTY=4
+      - BLOCK_SIZE=100
+      - MINING_REWARD=10.0
+    volumes:
+      - ./data/blockchain:/data
+    ports:
+      - "5002:5002"
+    depends_on:
+      - quantum_service
+
+  financial_service:
+    build:
+      context: .
+      dockerfile: docker/financial/Dockerfile
+    image: quantum-neural-blockchain/financial:latest
+    environment:
+      - TRADING_FREQUENCY=1.0
+      - RISK_TOLERANCE=0.1
+      - INITIAL_CAPITAL=1000000
+    volumes:
+      - ./data/financial:/data
+    ports:
+      - "5003:5003"
+    depends_on:
+      - quantum_service
+      - neural_service
+      - blockchain_service
+
+  optimization_service:
+    build:
+      context: .
+      dockerfile: docker/optimization/Dockerfile
+    image: quantum-neural-blockchain/optimization:latest
+    environment:
+      - OPTIMIZATION_STRATEGY=gradient
+      - MAX_ITERATIONS=1000
+      - CONVERGENCE_THRESHOLD=1e-6
+    volumes:
+      - ./data/optimization:/data
+    ports:
+      - "5004:5004"
+    depends_on:
+      - quantum_service
+      - neural_service
+
+  monitoring:
+    build:
+      context: .
+      dockerfile: docker/monitoring/Dockerfile
+    image: quantum-neural-blockchain/monitoring:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config/grafana:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - monitoring
+
+  redis:
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  postgres:
+    image: postgres:latest
+    environment:
+      - POSTGRES_USER=quantum
+      - POSTGRES_PASSWORD=quantum
+      - POSTGRES_DB=quantum_finance
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.9.3
+    environment:
+      - node.name=es01
+      - cluster.name=quantum-monitoring
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.9.3
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:7.9.3
+    volumes:
+      - ./config/logstash/pipeline:/usr/share/logstash/pipeline
+    ports:
+      - "5044:5044"
+    depends_on:
+      - elasticsearch
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx:/etc/nginx/conf.d
+      - ./ssl:/etc/nginx/ssl
+    depends_on:
+      - quantum_service
+      - neural_service
+      - blockchain_service
+      - financial_service
+      - optimization_service
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  redis_data:
+  postgres_data:
+  rabbitmq_data:
+  elasticsearch_data:
