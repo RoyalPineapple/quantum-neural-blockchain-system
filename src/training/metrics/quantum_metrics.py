@@ -1,240 +1,261 @@
 import torch
-from typing import Dict, Any, List, Optional
-import numpy as np
-from dataclasses import dataclass, field
+import torch.nn as nn
+from typing import List, Optional, Dict, Any, Tuple
+from ...quantum.core.quantum_register import QuantumRegister
+from ...quantum.utils.gates import QuantumGate, GateType
 
-@dataclass
-class MetricState:
-    """State for a single metric."""
-    values: List[float] = field(default_factory=list)
-    running_sum: float = 0.0
-    running_count: int = 0
-    best_value: Optional[float] = None
-    worst_value: Optional[float] = None
-
-class QuantumMetricCollection:
+class QuantumMetrics:
     """
-    Collection of quantum-aware metrics for model evaluation.
-    
-    This class implements various metrics specifically designed for
-    quantum-classical hybrid models, including:
-    - State fidelity
-    - Quantum loss
-    - Entanglement metrics
-    - Classical accuracy metrics
+    Quantum-enhanced metrics calculation and tracking system.
     """
     
-    def __init__(self):
-        """Initialize metric collection."""
-        self.metrics = {
-            'loss': MetricState(),
-            'accuracy': MetricState(),
-            'fidelity': MetricState(),
-            'entanglement': MetricState(),
-            'quantum_error': MetricState()
+    def __init__(
+        self,
+        n_qubits: int = 8,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    ):
+        """Initialize quantum metrics."""
+        self.n_qubits = n_qubits
+        self.device = device
+        
+        # Initialize quantum register
+        self.quantum_register = QuantumRegister(n_qubits)
+        
+        # Metrics history
+        self.history: Dict[str, List[float]] = {
+            'loss': [],
+            'accuracy': [],
+            'quantum_fidelity': [],
+            'entanglement': [],
+            'gradient_norm': []
         }
+    
+    def calculate(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+        quantum_state: Optional[torch.Tensor] = None,
+        gradients: Optional[torch.Tensor] = None
+    ) -> Dict[str, float]:
+        """Calculate comprehensive metrics."""
+        metrics = {}
         
-        self.custom_metrics = {}
+        # Classical metrics
+        metrics.update(self._calculate_classical_metrics(outputs, targets))
         
-    def update(self, outputs: torch.Tensor,
-               targets: torch.Tensor) -> Dict[str, float]:
-        """
-        Update metrics with new batch results.
+        # Quantum metrics
+        if quantum_state is not None:
+            metrics.update(self._calculate_quantum_metrics(quantum_state))
         
-        Args:
-            outputs: Model outputs
-            targets: Ground truth targets
-            
-        Returns:
-            Dict[str, float]: Current metric values
-        """
-        # Calculate basic metrics
-        batch_metrics = {
-            'loss': self._calculate_loss(outputs, targets),
-            'accuracy': self._calculate_accuracy(outputs, targets),
-            'fidelity': self._calculate_fidelity(outputs, targets),
-            'entanglement': self._calculate_entanglement(outputs),
-            'quantum_error': self._calculate_quantum_error(outputs)
-        }
+        # Gradient metrics
+        if gradients is not None:
+            metrics.update(self._calculate_gradient_metrics(gradients))
         
-        # Update metric states
-        for name, value in batch_metrics.items():
-            self._update_metric(name, value)
-            
-        # Calculate custom metrics
-        for name, metric_fn in self.custom_metrics.items():
-            value = metric_fn(outputs, targets)
-            self._update_metric(name, value)
-            batch_metrics[name] = value
-            
-        return batch_metrics
+        # Update history
+        self._update_history(metrics)
         
-    def reset(self):
-        """Reset all metrics."""
-        for metric in self.metrics.values():
-            metric.values = []
-            metric.running_sum = 0.0
-            metric.running_count = 0
-            metric.best_value = None
-            metric.worst_value = None
-            
-    def get_current(self) -> Dict[str, float]:
-        """
-        Get current metric values.
+        return metrics
+    
+    def _calculate_classical_metrics(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor
+    ) -> Dict[str, float]:
+        """Calculate classical performance metrics."""
+        # Loss
+        loss = nn.functional.cross_entropy(outputs, targets)
         
-        Returns:
-            Dict[str, float]: Current metric values
-        """
+        # Accuracy
+        predictions = torch.argmax(outputs, dim=1)
+        accuracy = (predictions == targets).float().mean()
+        
         return {
-            name: self._get_metric_value(metric)
-            for name, metric in self.metrics.items()
+            'loss': loss.item(),
+            'accuracy': accuracy.item()
         }
+    
+    def _calculate_quantum_metrics(
+        self,
+        quantum_state: torch.Tensor
+    ) -> Dict[str, float]:
+        """Calculate quantum-specific metrics."""
+        # Quantum fidelity
+        fidelity = torch.abs(torch.vdot(quantum_state, quantum_state))
         
+        # Entanglement entropy
+        density_matrix = torch.outer(quantum_state, torch.conj(quantum_state))
+        eigenvalues = torch.linalg.eigvalsh(density_matrix)
+        eigenvalues = eigenvalues[eigenvalues > 0]
+        entropy = -torch.sum(eigenvalues * torch.log2(eigenvalues))
+        
+        return {
+            'quantum_fidelity': fidelity.item(),
+            'entanglement': entropy.item()
+        }
+    
+    def _calculate_gradient_metrics(
+        self,
+        gradients: torch.Tensor
+    ) -> Dict[str, float]:
+        """Calculate gradient-based metrics."""
+        # Gradient norm
+        grad_norm = torch.norm(gradients)
+        
+        return {
+            'gradient_norm': grad_norm.item()
+        }
+    
+    def _update_history(
+        self,
+        metrics: Dict[str, float]
+    ) -> None:
+        """Update metrics history."""
+        for metric, value in metrics.items():
+            if metric in self.history:
+                self.history[metric].append(value)
+    
     def get_history(self) -> Dict[str, List[float]]:
-        """
-        Get metric history.
+        """Get metrics history."""
+        return self.history
+    
+    def reset(self) -> None:
+        """Reset metrics history."""
+        for metric in self.history:
+            self.history[metric] = []
+
+class QuantumLoss(nn.Module):
+    """Quantum-enhanced loss function."""
+    
+    def __init__(
+        self,
+        n_qubits: int,
+        alpha: float = 0.5,
+        device: str = "cuda"
+    ):
+        """Initialize quantum loss."""
+        super().__init__()
         
-        Returns:
-            Dict[str, List[float]]: Metric history
-        """
-        return {
-            name: metric.values
-            for name, metric in self.metrics.items()
-        }
+        self.n_qubits = n_qubits
+        self.alpha = alpha
+        self.device = device
         
-    def get_best(self) -> Dict[str, float]:
-        """
-        Get best metric values.
+        # Quantum register
+        self.quantum_register = QuantumRegister(n_qubits)
         
-        Returns:
-            Dict[str, float]: Best metric values
-        """
-        return {
-            name: metric.best_value
-            for name, metric in self.metrics.items()
-            if metric.best_value is not None
-        }
+        # Loss network
+        self.loss_net = nn.Sequential(
+            nn.Linear(n_qubits * 2, n_qubits),
+            nn.ReLU(),
+            nn.Linear(n_qubits, 1)
+        ).to(device)
+    
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+        quantum_state: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Calculate hybrid quantum-classical loss."""
+        # Classical loss component
+        classical_loss = nn.functional.cross_entropy(outputs, targets)
         
-    def add_custom_metric(self, name: str, metric_fn: callable):
-        """
-        Add custom metric.
+        # Quantum loss component
+        if quantum_state is not None:
+            quantum_loss = self._quantum_loss(quantum_state)
+        else:
+            quantum_loss = torch.tensor(0.0, device=self.device)
         
-        Args:
-            name: Metric name
-            metric_fn: Metric calculation function
-        """
-        self.metrics[name] = MetricState()
-        self.custom_metrics[name] = metric_fn
+        # Combine losses
+        total_loss = (
+            (1 - self.alpha) * classical_loss +
+            self.alpha * quantum_loss
+        )
         
-    def _calculate_loss(self, outputs: torch.Tensor,
-                       targets: torch.Tensor) -> float:
-        """Calculate quantum-aware loss."""
-        # Basic cross-entropy loss
-        loss = torch.nn.functional.cross_entropy(outputs, targets)
+        return total_loss
+    
+    def _quantum_loss(
+        self,
+        quantum_state: torch.Tensor
+    ) -> torch.Tensor:
+        """Calculate quantum loss component."""
+        # Reset quantum register
+        self.quantum_register.reset()
         
-        # Add quantum penalty term
-        quantum_penalty = self._calculate_quantum_penalty(outputs)
+        # Apply quantum operations
+        for i in range(self.n_qubits):
+            angle = quantum_state[i] * torch.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle.item()}),
+                [i]
+            )
         
-        return loss.item() + quantum_penalty
+        # Get quantum state
+        final_state = self.quantum_register.get_state()
         
-    def _calculate_accuracy(self, outputs: torch.Tensor,
-                          targets: torch.Tensor) -> float:
-        """Calculate classification accuracy."""
-        predictions = outputs.argmax(dim=1)
-        correct = (predictions == targets).sum().item()
-        total = targets.size(0)
-        return correct / total
+        # Calculate loss
+        state_tensor = torch.cat([
+            torch.tensor(final_state.real, device=self.device),
+            torch.tensor(final_state.imag, device=self.device)
+        ])
         
-    def _calculate_fidelity(self, outputs: torch.Tensor,
-                           targets: torch.Tensor) -> float:
-        """Calculate quantum state fidelity."""
-        # Convert to quantum states
-        output_state = self._normalize_quantum_state(outputs)
-        target_state = self._normalize_quantum_state(targets)
+        return self.loss_net(state_tensor)
+
+class QuantumAccuracy(nn.Module):
+    """Quantum-enhanced accuracy metric."""
+    
+    def __init__(
+        self,
+        n_qubits: int,
+        threshold: float = 0.5,
+        device: str = "cuda"
+    ):
+        """Initialize quantum accuracy."""
+        super().__init__()
         
-        # Calculate fidelity
-        fidelity = torch.abs(torch.sum(output_state.conj() * target_state))
-        return fidelity.item()
+        self.n_qubits = n_qubits
+        self.threshold = threshold
+        self.device = device
         
-    def _calculate_entanglement(self, quantum_state: torch.Tensor) -> float:
-        """Calculate entanglement metric."""
-        # Reshape to qubit structure
-        n_qubits = int(np.log2(quantum_state.size(-1)))
-        state_matrix = quantum_state.view([2] * n_qubits)
+        # Quantum register
+        self.quantum_register = QuantumRegister(n_qubits)
+    
+    def forward(
+        self,
+        outputs: torch.Tensor,
+        targets: torch.Tensor,
+        quantum_state: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Calculate quantum-enhanced accuracy."""
+        # Classical accuracy
+        predictions = torch.argmax(outputs, dim=1)
+        classical_acc = (predictions == targets).float().mean()
         
-        # Calculate reduced density matrices
-        entropies = []
-        for i in range(n_qubits):
-            # Trace out other qubits
-            reduced_matrix = torch.trace(state_matrix, dim1=i, dim2=i+1)
-            
-            # Calculate von Neumann entropy
-            eigenvalues = torch.linalg.eigvalsh(reduced_matrix)
-            entropy = -torch.sum(eigenvalues * torch.log2(eigenvalues + 1e-10))
-            entropies.append(entropy.item())
-            
-        # Return average entropy
-        return np.mean(entropies)
+        # Quantum accuracy component
+        if quantum_state is not None:
+            quantum_acc = self._quantum_accuracy(quantum_state)
+            return (classical_acc + quantum_acc) / 2
         
-    def _calculate_quantum_error(self, quantum_state: torch.Tensor) -> float:
-        """Calculate quantum error metric."""
-        # Check unitarity preservation
-        norm = torch.norm(quantum_state)
-        unitarity_error = torch.abs(norm - 1.0)
+        return classical_acc
+    
+    def _quantum_accuracy(
+        self,
+        quantum_state: torch.Tensor
+    ) -> torch.Tensor:
+        """Calculate quantum accuracy component."""
+        # Reset quantum register
+        self.quantum_register.reset()
         
-        # Check state validity
-        validity_error = torch.sum(torch.abs(quantum_state.imag()))
+        # Apply quantum operations
+        for i in range(self.n_qubits):
+            angle = quantum_state[i] * torch.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle.item()}),
+                [i]
+            )
         
-        return (unitarity_error + validity_error).item()
+        # Measure qubits
+        measurements = self.quantum_register.measure()
         
-    def _calculate_quantum_penalty(self, quantum_state: torch.Tensor) -> float:
-        """Calculate quantum penalty term."""
-        # Unitarity penalty
-        norm = torch.norm(quantum_state)
-        unitarity_penalty = torch.abs(norm - 1.0)
-        
-        # Entanglement penalty
-        entanglement = self._calculate_entanglement(quantum_state)
-        entanglement_penalty = torch.tensor(entanglement)
-        
-        # Combine penalties
-        return (unitarity_penalty + 0.1 * entanglement_penalty).item()
-        
-    def _normalize_quantum_state(self, state: torch.Tensor) -> torch.Tensor:
-        """Normalize quantum state."""
-        return state / torch.norm(state)
-        
-    def _update_metric(self, name: str, value: float):
-        """
-        Update metric state.
-        
-        Args:
-            name: Metric name
-            value: New value
-        """
-        metric = self.metrics[name]
-        
-        # Update running statistics
-        metric.values.append(value)
-        metric.running_sum += value
-        metric.running_count += 1
-        
-        # Update best/worst values
-        if metric.best_value is None or value < metric.best_value:
-            metric.best_value = value
-        if metric.worst_value is None or value > metric.worst_value:
-            metric.worst_value = value
-            
-    def _get_metric_value(self, metric: MetricState) -> float:
-        """
-        Get current value for metric.
-        
-        Args:
-            metric: Metric state
-            
-        Returns:
-            float: Current metric value
-        """
-        if metric.running_count == 0:
-            return 0.0
-        return metric.running_sum / metric.running_count
+        # Calculate accuracy based on measurements
+        correct = sum(1 for v in measurements.values() if v > self.threshold)
+        return torch.tensor(correct / self.n_qubits, device=self.device)

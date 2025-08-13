@@ -1,288 +1,302 @@
 import torch
-import torch.optim as optim
-from typing import Dict, Any, List, Optional, Iterator
-import numpy as np
-
+import torch.nn as nn
+from typing import List, Optional, Dict, Any, Tuple
 from ...quantum.core.quantum_register import QuantumRegister
+from ...quantum.utils.gates import QuantumGate, GateType
 
-class QuantumOptimizer(optim.Optimizer):
+class QuantumOptimizer(nn.Module):
     """
-    Quantum-enhanced optimizer implementing hybrid classical-quantum optimization.
-    
-    This optimizer combines classical optimization techniques with quantum
-    computing to potentially find better optimization paths and escape
-    local minima more effectively.
-    
-    Features:
-    - Quantum gradient processing
-    - Entanglement-based momentum
-    - Quantum state preparation
-    - Hybrid parameter updates
+    Quantum-enhanced optimizer with support for hybrid optimization
+    strategies and quantum gradient computation.
     """
     
-    def __init__(self, params: Iterator[torch.Tensor],
-                 lr: float = 1e-3,
-                 momentum: float = 0.9,
-                 weight_decay: float = 0,
-                 n_qubits: int = 4):
-        """
-        Initialize quantum optimizer.
+    def __init__(
+        self,
+        n_qubits: int,
+        learning_rate: float = 0.01,
+        momentum: float = 0.9,
+        device: str = "cuda"
+    ):
+        """Initialize quantum optimizer."""
+        super().__init__()
         
-        Args:
-            params: Iterable of parameters to optimize
-            lr: Learning rate
-            momentum: Momentum factor
-            weight_decay: Weight decay factor
-            n_qubits: Number of qubits for quantum operations
-        """
-        defaults = dict(
-            lr=lr,
-            momentum=momentum,
-            weight_decay=weight_decay,
-            n_qubits=n_qubits,
-            quantum_state=None,
-            momentum_buffer=None
-        )
-        super().__init__(params, defaults)
+        self.n_qubits = n_qubits
+        self.learning_rate = learning_rate
+        self.momentum = momentum
+        self.device = device
         
-        # Initialize quantum components
+        # Quantum register
         self.quantum_register = QuantumRegister(n_qubits)
-        self.step_count = 0
         
-    def step(self, closure: Optional[callable] = None) -> Optional[float]:
-        """
-        Perform a single optimization step.
+        # Optimizer state
+        self.state: Dict[str, torch.Tensor] = {}
+    
+    def step(
+        self,
+        params: List[torch.Tensor],
+        grads: List[torch.Tensor],
+        quantum_state: Optional[torch.Tensor] = None
+    ) -> List[torch.Tensor]:
+        """Perform optimization step."""
+        if not self.state:
+            self._initialize_state(params)
         
-        Args:
-            closure: Callable that evaluates the model
-            
-        Returns:
-            Optional[float]: Loss value if closure is provided
-        """
-        loss = None
-        if closure is not None:
-            loss = closure()
-            
-        for group in self.param_groups:
-            # Get parameters
-            lr = group['lr']
-            momentum = group['momentum']
-            weight_decay = group['weight_decay']
-            
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                    
-                # Get gradient
-                d_p = p.grad.data
-                
-                # Apply weight decay
-                if weight_decay != 0:
-                    d_p = d_p.add(p.data, alpha=weight_decay)
-                    
-                # Quantum gradient processing
-                d_p = self._quantum_gradient_processing(d_p, group)
-                
-                # Apply momentum
-                param_state = self.state[p]
-                if 'momentum_buffer' not in param_state:
-                    buf = param_state['momentum_buffer'] = torch.clone(d_p).detach()
-                else:
-                    buf = param_state['momentum_buffer']
-                    buf.mul_(momentum).add_(d_p, alpha=1 - momentum)
-                    
-                # Quantum momentum adjustment
-                buf = self._quantum_momentum_adjustment(buf, group)
-                
-                # Update parameters
-                p.data.add_(buf, alpha=-lr)
-                
-        self.step_count += 1
-        return loss
+        # Calculate quantum gradients if quantum state is provided
+        if quantum_state is not None:
+            quantum_grads = self._compute_quantum_gradients(
+                params,
+                quantum_state
+            )
+            # Combine classical and quantum gradients
+            combined_grads = [
+                (g + qg) / 2
+                for g, qg in zip(grads, quantum_grads)
+            ]
+        else:
+            combined_grads = grads
         
-    def _quantum_gradient_processing(self, gradient: torch.Tensor,
-                                   group: Dict[str, Any]) -> torch.Tensor:
-        """
-        Process gradients using quantum operations.
-        
-        Args:
-            gradient: Gradient tensor
-            group: Parameter group
+        # Update momentum
+        for i, (param, grad) in enumerate(zip(params, combined_grads)):
+            momentum_buf = self.state[f'momentum_{i}']
+            momentum_buf.mul_(self.momentum).add_(grad)
             
-        Returns:
-            torch.Tensor: Processed gradient
-        """
-        # Convert gradient to quantum state
-        quantum_state = self._prepare_quantum_state(gradient)
+            # Update parameter
+            param.add_(momentum_buf, alpha=-self.learning_rate)
+        
+        return params
+    
+    def _initialize_state(
+        self,
+        params: List[torch.Tensor]
+    ) -> None:
+        """Initialize optimizer state."""
+        for i, param in enumerate(params):
+            self.state[f'momentum_{i}'] = torch.zeros_like(
+                param,
+                device=self.device
+            )
+    
+    def _compute_quantum_gradients(
+        self,
+        params: List[torch.Tensor],
+        quantum_state: torch.Tensor
+    ) -> List[torch.Tensor]:
+        """Compute gradients using quantum circuit."""
+        quantum_grads = []
+        
+        for param in params:
+            # Reset quantum register
+            self.quantum_register.reset()
+            
+            # Apply quantum operations
+            for i in range(self.n_qubits):
+                angle = quantum_state[i] * torch.pi
+                self.quantum_register.apply_gate(
+                    QuantumGate(GateType.Ry, {'theta': angle.item()}),
+                    [i]
+                )
+            
+            # Compute gradient through quantum circuit
+            grad = torch.zeros_like(param, device=self.device)
+            
+            for i in range(len(param.view(-1))):
+                # Parameter shift rule
+                shift = torch.zeros_like(param.view(-1))
+                shift[i] = torch.pi / 2
+                
+                # Forward evaluation
+                forward = self._quantum_forward(param.view(-1) + shift)
+                
+                # Backward evaluation
+                backward = self._quantum_forward(param.view(-1) - shift)
+                
+                # Compute gradient
+                grad.view(-1)[i] = (forward - backward) / 2
+            
+            quantum_grads.append(grad)
+        
+        return quantum_grads
+    
+    def _quantum_forward(
+        self,
+        param: torch.Tensor
+    ) -> float:
+        """Forward pass through quantum circuit."""
+        # Reset quantum register
+        self.quantum_register.reset()
+        
+        # Apply parameterized quantum operations
+        for i in range(min(len(param), self.n_qubits)):
+            angle = param[i] * torch.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle.item()}),
+                [i]
+            )
+        
+        # Measure quantum state
+        measurements = self.quantum_register.measure()
+        
+        # Calculate expectation value
+        expectation = sum(
+            k * v for k, v in measurements.items()
+        ) / self.n_qubits
+        
+        return expectation
+
+class QuantumScheduler:
+    """Learning rate scheduler with quantum adaptation."""
+    
+    def __init__(
+        self,
+        optimizer: QuantumOptimizer,
+        mode: str = 'min',
+        factor: float = 0.1,
+        patience: int = 10,
+        threshold: float = 1e-4,
+        min_lr: float = 1e-6
+    ):
+        """Initialize quantum scheduler."""
+        self.optimizer = optimizer
+        self.mode = mode
+        self.factor = factor
+        self.patience = patience
+        self.threshold = threshold
+        self.min_lr = min_lr
+        
+        self.best = float('inf') if mode == 'min' else float('-inf')
+        self.num_bad_epochs = 0
+        
+        # Quantum components
+        self.quantum_register = QuantumRegister(optimizer.n_qubits)
+    
+    def step(
+        self,
+        metrics: float,
+        quantum_state: Optional[torch.Tensor] = None
+    ) -> None:
+        """Update learning rate based on metrics."""
+        if self.mode == 'min':
+            is_better = metrics < self.best - self.threshold
+        else:
+            is_better = metrics > self.best + self.threshold
+        
+        # Include quantum feedback if available
+        if quantum_state is not None:
+            quantum_feedback = self._compute_quantum_feedback(quantum_state)
+            is_better = is_better and quantum_feedback > 0.5
+        
+        if is_better:
+            self.best = metrics
+            self.num_bad_epochs = 0
+        else:
+            self.num_bad_epochs += 1
+        
+        # Adjust learning rate if needed
+        if self.num_bad_epochs > self.patience:
+            self._adjust_learning_rate()
+            self.num_bad_epochs = 0
+    
+    def _adjust_learning_rate(self) -> None:
+        """Reduce learning rate."""
+        new_lr = max(
+            self.optimizer.learning_rate * self.factor,
+            self.min_lr
+        )
+        self.optimizer.learning_rate = new_lr
+    
+    def _compute_quantum_feedback(
+        self,
+        quantum_state: torch.Tensor
+    ) -> float:
+        """Compute quantum feedback for adaptation."""
+        # Reset quantum register
+        self.quantum_register.reset()
         
         # Apply quantum operations
-        quantum_state = self._apply_quantum_operations(quantum_state, group)
+        for i in range(self.quantum_register.n_qubits):
+            angle = quantum_state[i] * torch.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle.item()}),
+                [i]
+            )
         
-        # Convert back to classical gradient
-        processed_gradient = self._measure_quantum_state(quantum_state)
+        # Measure quantum state
+        measurements = self.quantum_register.measure()
         
-        return processed_gradient.reshape(gradient.shape)
+        # Calculate feedback signal
+        return sum(v for v in measurements.values()) / len(measurements)
+
+class QuantumCallback:
+    """Callback for quantum-aware training monitoring."""
+    
+    def __init__(
+        self,
+        n_qubits: int,
+        device: str = "cuda"
+    ):
+        """Initialize quantum callback."""
+        self.n_qubits = n_qubits
+        self.device = device
         
-    def _quantum_momentum_adjustment(self, momentum: torch.Tensor,
-                                  group: Dict[str, Any]) -> torch.Tensor:
-        """
-        Adjust momentum using quantum operations.
+        # Quantum register
+        self.quantum_register = QuantumRegister(n_qubits)
         
-        Args:
-            momentum: Momentum tensor
-            group: Parameter group
+        # Callback history
+        self.history: Dict[str, List[float]] = {
+            'quantum_state_quality': [],
+            'entanglement': [],
+            'coherence': []
+        }
+    
+    def __call__(
+        self,
+        state: Dict[str, Any]
+    ) -> None:
+        """Execute callback."""
+        if 'quantum_state' in state:
+            metrics = self._compute_quantum_metrics(state['quantum_state'])
             
-        Returns:
-            torch.Tensor: Adjusted momentum
-        """
-        # Convert momentum to quantum state
-        quantum_state = self._prepare_quantum_state(momentum)
+            # Update history
+            for metric, value in metrics.items():
+                self.history[metric].append(value)
+    
+    def _compute_quantum_metrics(
+        self,
+        quantum_state: torch.Tensor
+    ) -> Dict[str, float]:
+        """Compute quantum metrics."""
+        # Reset quantum register
+        self.quantum_register.reset()
         
-        # Apply quantum momentum operations
-        quantum_state = self._apply_momentum_operations(quantum_state, group)
+        # Apply quantum operations
+        for i in range(self.n_qubits):
+            angle = quantum_state[i] * torch.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle.item()}),
+                [i]
+            )
         
-        # Convert back to classical momentum
-        adjusted_momentum = self._measure_quantum_state(quantum_state)
+        # Get final state
+        final_state = self.quantum_register.get_state()
         
-        return adjusted_momentum.reshape(momentum.shape)
+        # Calculate metrics
+        quality = np.abs(np.vdot(final_state, final_state))
         
-    def _prepare_quantum_state(self, tensor: torch.Tensor) -> np.ndarray:
-        """
-        Prepare quantum state from classical tensor.
+        # Calculate entanglement
+        density_matrix = np.outer(final_state, np.conj(final_state))
+        eigenvalues = np.linalg.eigvalsh(density_matrix)
+        eigenvalues = eigenvalues[eigenvalues > 0]
+        entanglement = -np.sum(eigenvalues * np.log2(eigenvalues))
         
-        Args:
-            tensor: Input tensor
-            
-        Returns:
-            np.ndarray: Quantum state
-        """
-        # Flatten and normalize
-        flat_tensor = tensor.reshape(-1)
-        normalized = flat_tensor / torch.norm(flat_tensor)
+        # Calculate coherence
+        coherence = np.mean(np.abs(final_state))
         
-        # Convert to quantum state
-        quantum_state = normalized.cpu().numpy()
-        
-        # Ensure compatible size
-        target_size = 2**self.quantum_register.n_qubits
-        if len(quantum_state) > target_size:
-            # Truncate if necessary
-            quantum_state = quantum_state[:target_size]
-        elif len(quantum_state) < target_size:
-            # Pad with zeros
-            padding = np.zeros(target_size - len(quantum_state))
-            quantum_state = np.concatenate([quantum_state, padding])
-            
-        # Renormalize
-        quantum_state = quantum_state / np.linalg.norm(quantum_state)
-        
-        return quantum_state
-        
-    def _apply_quantum_operations(self, quantum_state: np.ndarray,
-                                group: Dict[str, Any]) -> np.ndarray:
-        """
-        Apply quantum operations to state.
-        
-        Args:
-            quantum_state: Input quantum state
-            group: Parameter group
-            
-        Returns:
-            np.ndarray: Processed quantum state
-        """
-        # Initialize quantum register
-        self.quantum_register.quantum_states = quantum_state
-        
-        # Apply Hadamard gates for superposition
-        for i in range(group['n_qubits']):
-            self._apply_hadamard(i)
-            
-        # Apply controlled phase rotations
-        for i in range(group['n_qubits'] - 1):
-            self._apply_controlled_phase(i, i + 1)
-            
-        # Apply final Hadamard gates
-        for i in range(group['n_qubits']):
-            self._apply_hadamard(i)
-            
-        return self.quantum_register.quantum_states
-        
-    def _apply_momentum_operations(self, quantum_state: np.ndarray,
-                                 group: Dict[str, Any]) -> np.ndarray:
-        """
-        Apply quantum operations for momentum adjustment.
-        
-        Args:
-            quantum_state: Input quantum state
-            group: Parameter group
-            
-        Returns:
-            np.ndarray: Processed quantum state
-        """
-        # Initialize quantum register
-        self.quantum_register.quantum_states = quantum_state
-        
-        # Apply momentum-specific quantum operations
-        momentum = group['momentum']
-        
-        # Phase rotation based on momentum
-        phase = np.exp(1j * np.pi * momentum)
-        phase_gate = np.array([[1, 0], [0, phase]])
-        
-        for i in range(group['n_qubits']):
-            self.quantum_register.apply_gate(phase_gate, i)
-            
-        return self.quantum_register.quantum_states
-        
-    def _measure_quantum_state(self, quantum_state: np.ndarray) -> torch.Tensor:
-        """
-        Measure quantum state to get classical values.
-        
-        Args:
-            quantum_state: Quantum state
-            
-        Returns:
-            torch.Tensor: Classical tensor
-        """
-        # Convert to tensor
-        return torch.from_numpy(quantum_state)
-        
-    def _apply_hadamard(self, qubit: int):
-        """Apply Hadamard gate to qubit."""
-        hadamard = np.array([[1, 1], [1, -1]]) / np.sqrt(2)
-        self.quantum_register.apply_gate(hadamard, qubit)
-        
-    def _apply_controlled_phase(self, control: int, target: int):
-        """Apply controlled phase gate between qubits."""
-        # Construct controlled phase gate
-        dim = 2**self.quantum_register.n_qubits
-        gate = np.eye(dim, dtype=complex)
-        
-        # Add phase to controlled state
-        phase = np.exp(1j * np.pi / 4)  # π/4 phase rotation
-        for i in range(dim):
-            if (i >> control) & 1 and (i >> target) & 1:
-                gate[i, i] = phase
-                
-        self.quantum_register.apply_gate(gate, control)
-        
-    def state_dict(self) -> Dict[str, Any]:
-        """
-        Get optimizer state.
-        
-        Returns:
-            Dict[str, Any]: Optimizer state
-        """
-        state_dict = super().state_dict()
-        state_dict['step_count'] = self.step_count
-        return state_dict
-        
-    def load_state_dict(self, state_dict: Dict[str, Any]):
-        """
-        Load optimizer state.
-        
-        Args:
-            state_dict: Optimizer state
-        """
-        super().load_state_dict(state_dict)
-        self.step_count = state_dict['step_count']
+        return {
+            'quantum_state_quality': float(quality),
+            'entanglement': float(entanglement),
+            'coherence': float(coherence)
+        }
+    
+    def get_history(self) -> Dict[str, List[float]]:
+        """Get callback history."""
+        return self.history
