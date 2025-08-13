@@ -1,255 +1,431 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import List, Optional, Tuple, Dict, Any
-from dataclasses import dataclass
-import numpy as np
-
+from typing import List, Optional, Dict, Any, Union
 from ...quantum.core.quantum_register import QuantumRegister
-from ...neural.core.quantum_neural_layer import QuantumNeuralLayer, QuantumNeuralConfig
-from ..utils.quantum_embedding import QuantumTextEncoder
-from ..utils.attention import QuantumAttention
+from ...quantum.utils.gates import QuantumGate, GateType
+from ...neural.core.quantum_transformer import QuantumTransformer
 
-@dataclass
-class QuantumNLPConfig:
-    """Configuration for Quantum NLP System."""
-    vocab_size: int
-    embedding_dim: int
-    n_qubits: int
-    n_quantum_layers: int
-    n_attention_heads: int
-    max_sequence_length: int
-    learning_rate: float
-    quantum_circuit_depth: int
-
-class QuantumNLPSystem(nn.Module):
+class QuantumNLPSystem:
     """
-    Quantum-enhanced natural language processing system.
-    Combines quantum computing with classical NLP techniques.
+    Quantum-enhanced Natural Language Processing system combining
+    quantum computing with advanced NLP techniques.
     """
     
-    def __init__(self, config: QuantumNLPConfig):
+    def __init__(
+        self,
+        vocab_size: int,
+        max_seq_length: int = 512,
+        embedding_dim: int = 768,
+        n_qubits: int = 8,
+        n_heads: int = 12,
+        n_layers: int = 6,
+        dropout: float = 0.1,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    ):
         """
         Initialize quantum NLP system.
         
         Args:
-            config: Configuration parameters
+            vocab_size: Size of vocabulary
+            max_seq_length: Maximum sequence length
+            embedding_dim: Embedding dimension
+            n_qubits: Number of qubits for quantum operations
+            n_heads: Number of attention heads
+            n_layers: Number of transformer layers
+            dropout: Dropout rate
+            device: Computation device
         """
-        super().__init__()
-        self.config = config
+        self.vocab_size = vocab_size
+        self.max_seq_length = max_seq_length
+        self.embedding_dim = embedding_dim
+        self.n_qubits = n_qubits
+        self.device = device
         
-        # Classical embedding layer
-        self.embedding = nn.Embedding(
-            config.vocab_size,
-            config.embedding_dim
+        # Token embedding
+        self.token_embedding = nn.Embedding(
+            vocab_size,
+            embedding_dim
+        ).to(device)
+        
+        # Quantum embedding
+        self.quantum_embedding = QuantumEmbedding(
+            embedding_dim=embedding_dim,
+            n_qubits=n_qubits,
+            device=device
         )
         
-        # Quantum text encoder
-        self.quantum_encoder = QuantumTextEncoder(
-            embedding_dim=config.embedding_dim,
-            n_qubits=config.n_qubits
+        # Quantum transformer
+        self.transformer = QuantumTransformer(
+            n_qubits=n_qubits,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            d_model=embedding_dim,
+            dropout=dropout,
+            max_seq_length=max_seq_length,
+            device=device
         )
         
-        # Quantum processing layer
-        self.quantum_processor = QuantumNeuralLayer(
-            QuantumNeuralConfig(
-                n_qubits=config.n_qubits,
-                n_quantum_layers=config.n_quantum_layers,
-                n_classical_layers=2,
-                learning_rate=config.learning_rate,
-                quantum_circuit_depth=config.quantum_circuit_depth
+        # Task-specific heads
+        self.task_heads = nn.ModuleDict({
+            'classification': QuantumClassificationHead(
+                embedding_dim=embedding_dim,
+                n_qubits=n_qubits,
+                device=device
+            ),
+            'generation': QuantumGenerationHead(
+                embedding_dim=embedding_dim,
+                vocab_size=vocab_size,
+                n_qubits=n_qubits,
+                device=device
+            ),
+            'translation': QuantumTranslationHead(
+                embedding_dim=embedding_dim,
+                vocab_size=vocab_size,
+                n_qubits=n_qubits,
+                device=device
             )
-        )
+        })
         
-        # Quantum attention mechanism
-        self.quantum_attention = QuantumAttention(
-            n_heads=config.n_attention_heads,
-            n_qubits=config.n_qubits,
-            max_sequence_length=config.max_sequence_length
-        )
-        
-        # Output projection layers
-        self.output_layers = nn.Sequential(
-            nn.Linear(2**config.n_qubits, 512),
-            nn.ReLU(),
-            nn.Linear(512, config.embedding_dim)
-        )
-        
-    def forward(self, input_ids: torch.Tensor, 
-                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def process_text(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        task: str = "classification",
+        **kwargs
+    ) -> Dict[str, Any]:
         """
-        Forward pass through the NLP system.
+        Process text using quantum NLP system.
         
         Args:
-            input_ids: Token IDs [batch_size, sequence_length]
-            attention_mask: Attention mask [batch_size, sequence_length]
+            input_ids: Input token IDs [batch_size, seq_length]
+            attention_mask: Attention mask [batch_size, seq_length]
+            task: Processing task (classification, generation, translation)
+            **kwargs: Additional task-specific parameters
             
         Returns:
-            torch.Tensor: Processed output
+            Dictionary containing task results
         """
         # Get embeddings
-        embeddings = self.embedding(input_ids)
+        embeddings = self.token_embedding(input_ids)
         
-        # Quantum encoding
-        quantum_states = self.quantum_encoder(embeddings)
+        # Apply quantum embedding
+        quantum_embeddings = self.quantum_embedding(embeddings)
         
-        # Apply quantum attention
-        if attention_mask is not None:
-            attended_states = self.quantum_attention(
-                quantum_states,
-                attention_mask
-            )
-        else:
-            attended_states = quantum_states
-            
-        # Quantum processing
-        processed_states = self.quantum_processor(attended_states)
-        
-        # Project back to embedding space
-        output = self.output_layers(processed_states)
-        
-        return output
-        
-    def encode_text(self, text: str) -> torch.Tensor:
-        """
-        Encode text into quantum state.
-        
-        Args:
-            text: Input text string
-            
-        Returns:
-            torch.Tensor: Quantum encoding
-        """
-        # Tokenize text (simplified - would use proper tokenizer in practice)
-        tokens = text.split()
-        token_ids = [hash(token) % self.config.vocab_size for token in tokens]
-        
-        # Convert to tensor
-        input_ids = torch.tensor(token_ids).unsqueeze(0)  # Add batch dimension
-        
-        # Get embeddings
-        embeddings = self.embedding(input_ids)
-        
-        # Quantum encoding
-        quantum_states = self.quantum_encoder(embeddings)
-        
-        return quantum_states
-        
-    def decode_quantum_state(self, quantum_state: torch.Tensor) -> List[str]:
-        """
-        Decode quantum state back to text.
-        
-        Args:
-            quantum_state: Quantum state tensor
-            
-        Returns:
-            List[str]: Decoded tokens
-        """
-        # Project to embedding space
-        embeddings = self.output_layers(quantum_state)
-        
-        # Find nearest tokens in embedding space
-        similarities = torch.matmul(
-            embeddings,
-            self.embedding.weight.t()
+        # Process through transformer
+        transformer_output = self.transformer(
+            quantum_embeddings,
+            attention_mask
         )
         
-        # Get most similar tokens
-        token_ids = torch.argmax(similarities, dim=-1)
-        
-        # Convert to tokens (simplified - would use proper tokenizer in practice)
-        tokens = [str(idx.item()) for idx in token_ids[0]]
-        
-        return tokens
-        
-    def quantum_semantic_analysis(self, texts: List[str]) -> Dict[str, torch.Tensor]:
+        # Process with task-specific head
+        if task not in self.task_heads:
+            raise ValueError(f"Unsupported task: {task}")
+            
+        return self.task_heads[task](transformer_output, **kwargs)
+    
+    def quantum_analysis(
+        self,
+        input_ids: torch.Tensor
+    ) -> Dict[str, Any]:
         """
-        Perform quantum-enhanced semantic analysis.
+        Analyze quantum properties of text processing.
         
         Args:
-            texts: List of input texts
+            input_ids: Input token IDs
             
         Returns:
-            Dict[str, torch.Tensor]: Analysis results
+            Dictionary of quantum analysis results
         """
-        # Encode all texts
-        quantum_states = []
-        for text in texts:
-            state = self.encode_text(text)
-            quantum_states.append(state)
-            
-        # Stack states
-        quantum_states = torch.cat(quantum_states, dim=0)
+        # Get embeddings
+        embeddings = self.token_embedding(input_ids)
         
-        # Calculate semantic similarities using quantum states
-        similarities = self._quantum_similarity_matrix(quantum_states)
-        
-        # Analyze entanglement patterns
-        entanglement = self._analyze_semantic_entanglement(quantum_states)
+        # Analyze quantum embedding
+        quantum_stats = self.quantum_embedding.quantum_state_analysis(
+            embeddings
+        )
         
         return {
-            'quantum_states': quantum_states,
-            'similarities': similarities,
-            'entanglement': entanglement
+            'embedding_stats': quantum_stats,
+            'entanglement_measure': self._calculate_entanglement(quantum_stats)
+        }
+    
+    def _calculate_entanglement(
+        self,
+        quantum_stats: List[Dict]
+    ) -> float:
+        """Calculate quantum entanglement measure."""
+        # Initialize quantum register
+        quantum_register = QuantumRegister(self.n_qubits)
+        
+        # Apply quantum operations based on stats
+        for stat_dict in quantum_stats:
+            for layer_name, stats in stat_dict.items():
+                mean_angle = stats['mean'] * np.pi
+                std_angle = stats['std'] * np.pi
+                
+                # Apply rotations
+                for qubit in range(self.n_qubits):
+                    quantum_register.apply_gate(
+                        QuantumGate(GateType.Ry, {'theta': mean_angle}),
+                        [qubit]
+                    )
+                    quantum_register.apply_gate(
+                        QuantumGate(GateType.Rz, {'theta': std_angle}),
+                        [qubit]
+                    )
+                
+                # Entangle qubits
+                for i in range(self.n_qubits - 1):
+                    quantum_register.apply_gate(
+                        QuantumGate(GateType.CNOT),
+                        [i, i + 1]
+                    )
+        
+        # Calculate entanglement
+        final_state = quantum_register.get_state()
+        density_matrix = np.outer(final_state, np.conj(final_state))
+        eigenvalues = np.linalg.eigvalsh(density_matrix)
+        eigenvalues = eigenvalues[eigenvalues > 0]
+        entropy = -np.sum(eigenvalues * np.log2(eigenvalues))
+        
+        return entropy
+    
+    def save_model(self, path: str) -> None:
+        """Save model parameters."""
+        torch.save({
+            'token_embedding': self.token_embedding.state_dict(),
+            'quantum_embedding': self.quantum_embedding.state_dict(),
+            'transformer': self.transformer.state_dict(),
+            'task_heads': self.task_heads.state_dict()
+        }, path)
+    
+    def load_model(self, path: str) -> None:
+        """Load model parameters."""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.token_embedding.load_state_dict(checkpoint['token_embedding'])
+        self.quantum_embedding.load_state_dict(checkpoint['quantum_embedding'])
+        self.transformer.load_state_dict(checkpoint['transformer'])
+        self.task_heads.load_state_dict(checkpoint['task_heads'])
+        
+class QuantumEmbedding(nn.Module):
+    """Quantum-enhanced token embedding."""
+    
+    def __init__(
+        self,
+        embedding_dim: int,
+        n_qubits: int,
+        device: str
+    ):
+        """Initialize quantum embedding."""
+        super().__init__()
+        
+        self.n_qubits = n_qubits
+        self.embedding_dim = embedding_dim
+        
+        # Quantum register
+        self.quantum_register = QuantumRegister(n_qubits)
+        
+        # Trainable parameters
+        self.quantum_params = nn.Parameter(
+            torch.randn(embedding_dim, n_qubits, 3)  # 3 rotation angles
+        )
+        
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass."""
+        batch_size, seq_length, _ = x.shape
+        
+        # Process each embedding through quantum circuit
+        quantum_embeddings = []
+        for i in range(batch_size):
+            for j in range(seq_length):
+                embedding = x[i, j]
+                quantum_state = self._apply_quantum_circuit(embedding)
+                quantum_embeddings.append(quantum_state)
+        
+        # Stack and reshape
+        quantum_embeddings = torch.stack(quantum_embeddings)
+        quantum_embeddings = quantum_embeddings.view(
+            batch_size,
+            seq_length,
+            self.embedding_dim
+        )
+        
+        return quantum_embeddings
+    
+    def _apply_quantum_circuit(
+        self,
+        embedding: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply quantum circuit to embedding."""
+        # Reset quantum register
+        self.quantum_register.reset()
+        
+        # Apply quantum operations
+        for i in range(self.embedding_dim):
+            for qubit in range(self.n_qubits):
+                # Get rotation angles
+                theta = self.quantum_params[i, qubit, 0] * embedding[i]
+                phi = self.quantum_params[i, qubit, 1] * embedding[i]
+                lambda_ = self.quantum_params[i, qubit, 2] * embedding[i]
+                
+                # Apply rotation gates
+                self.quantum_register.apply_gate(
+                    QuantumGate(GateType.Rx, {'theta': theta.item()}),
+                    [qubit]
+                )
+                self.quantum_register.apply_gate(
+                    QuantumGate(GateType.Ry, {'theta': phi.item()}),
+                    [qubit]
+                )
+                self.quantum_register.apply_gate(
+                    QuantumGate(GateType.Rz, {'theta': lambda_.item()}),
+                    [qubit]
+                )
+            
+            # Entangle qubits
+            for q in range(self.n_qubits - 1):
+                self.quantum_register.apply_gate(
+                    QuantumGate(GateType.CNOT),
+                    [q, q + 1]
+                )
+        
+        # Get quantum state
+        quantum_state = self.quantum_register.get_state()
+        return torch.tensor(quantum_state, device=embedding.device)
+    
+    def quantum_state_analysis(
+        self,
+        embeddings: torch.Tensor
+    ) -> List[Dict]:
+        """Analyze quantum states."""
+        states = []
+        
+        # Process sample embeddings
+        for i in range(min(10, embeddings.size(0))):
+            embedding = embeddings[i, 0]  # First token of sequence
+            quantum_state = self._apply_quantum_circuit(embedding)
+            
+            # Calculate statistics
+            stats = {
+                f'embedding_{i}': {
+                    'mean': quantum_state.mean().item(),
+                    'std': quantum_state.std().item(),
+                    'min': quantum_state.min().item(),
+                    'max': quantum_state.max().item(),
+                    'norm': torch.norm(quantum_state).item()
+                }
+            }
+            states.append(stats)
+            
+        return states
+        
+class QuantumClassificationHead(nn.Module):
+    """Quantum classification head."""
+    
+    def __init__(
+        self,
+        embedding_dim: int,
+        n_qubits: int,
+        n_classes: int = 2,
+        device: str = "cuda"
+    ):
+        """Initialize classification head."""
+        super().__init__()
+        
+        self.quantum_layer = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(embedding_dim, n_classes)
+        ).to(device)
+        
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass."""
+        # Use [CLS] token output
+        cls_output = x[:, 0]
+        
+        # Classification
+        logits = self.quantum_layer(cls_output)
+        probs = torch.softmax(logits, dim=-1)
+        
+        return {
+            'logits': logits,
+            'probabilities': probs
         }
         
-    def _quantum_similarity_matrix(self, states: torch.Tensor) -> torch.Tensor:
-        """
-        Calculate quantum state similarity matrix.
+class QuantumGenerationHead(nn.Module):
+    """Quantum text generation head."""
+    
+    def __init__(
+        self,
+        embedding_dim: int,
+        vocab_size: int,
+        n_qubits: int,
+        device: str = "cuda"
+    ):
+        """Initialize generation head."""
+        super().__init__()
         
-        Args:
-            states: Batch of quantum states
+        self.output_layer = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(embedding_dim, vocab_size)
+        ).to(device)
+        
+    def forward(
+        self,
+        x: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass."""
+        # Generate logits for each position
+        logits = self.output_layer(x)
+        
+        return {
+            'logits': logits,
+            'next_token_logits': logits[:, -1]
+        }
+        
+class QuantumTranslationHead(nn.Module):
+    """Quantum translation head."""
+    
+    def __init__(
+        self,
+        embedding_dim: int,
+        vocab_size: int,
+        n_qubits: int,
+        device: str = "cuda"
+    ):
+        """Initialize translation head."""
+        super().__init__()
+        
+        self.decoder = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(embedding_dim, vocab_size)
+        ).to(device)
+        
+    def forward(
+        self,
+        x: torch.Tensor,
+        encoder_outputs: Optional[torch.Tensor] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Forward pass."""
+        # Decode with attention to encoder
+        if encoder_outputs is not None:
+            x = x + encoder_outputs
             
-        Returns:
-            torch.Tensor: Similarity matrix
-        """
-        # Calculate state overlaps
-        similarities = torch.zeros((len(states), len(states)))
+        # Generate translation logits
+        logits = self.decoder(x)
         
-        for i in range(len(states)):
-            for j in range(len(states)):
-                overlap = torch.abs(torch.sum(
-                    states[i].conj() * states[j]
-                ))
-                similarities[i,j] = overlap
-                
-        return similarities
-        
-    def _analyze_semantic_entanglement(self, states: torch.Tensor) -> torch.Tensor:
-        """
-        Analyze semantic entanglement patterns.
-        
-        Args:
-            states: Batch of quantum states
-            
-        Returns:
-            torch.Tensor: Entanglement measures
-        """
-        # Calculate reduced density matrices
-        n_qubits = self.config.n_qubits
-        entanglement = torch.zeros((len(states), n_qubits))
-        
-        for i in range(len(states)):
-            state = states[i]
-            
-            # Reshape to qubit structure
-            state_matrix = state.view([2] * n_qubits)
-            
-            # Calculate entanglement entropy for each qubit
-            for j in range(n_qubits):
-                # Trace out other qubits
-                reduced_matrix = torch.trace(
-                    state_matrix,
-                    dim1=j,
-                    dim2=j+1
-                )
-                
-                # Calculate von Neumann entropy
-                eigenvalues = torch.linalg.eigvalsh(reduced_matrix)
-                entropy = -torch.sum(
-                    eigenvalues * torch.log2(eigenvalues + 1e-10)
-                )
-                
-                entanglement[i,j] = entropy
-                
-        return entanglement
+        return {
+            'logits': logits,
+            'next_token_logits': logits[:, -1]
+        }
