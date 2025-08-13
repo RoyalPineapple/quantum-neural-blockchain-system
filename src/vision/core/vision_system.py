@@ -1,285 +1,419 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from typing import List, Optional, Tuple, Dict, Any
-import numpy as np
-from dataclasses import dataclass
-
 from ...quantum.core.quantum_register import QuantumRegister
-from ...neural.core.quantum_neural_layer import QuantumNeuralLayer, QuantumNeuralConfig
-from ..utils.quantum_image import QuantumImageEncoder, QuantumImageDecoder
+from ...quantum.utils.gates import QuantumGate, GateType
+from ...neural.core.quantum_neural_layer import QuantumNeuralLayer
 
-@dataclass
-class QuantumVisionConfig:
-    """Configuration for Quantum Vision System."""
-    image_size: Tuple[int, int]  # (height, width)
-    n_channels: int
-    n_qubits: int
-    n_quantum_layers: int
-    n_classical_layers: int
-    learning_rate: float
-    quantum_circuit_depth: int
-
-class QuantumVisionSystem(nn.Module):
+class QuantumVisionSystem:
     """
-    Quantum-enhanced computer vision system.
-    Combines quantum image processing with classical vision techniques.
+    Quantum-enhanced computer vision system combining quantum computing
+    with classical deep learning for image processing and analysis.
     """
     
-    def __init__(self, config: QuantumVisionConfig):
+    def __init__(
+        self,
+        image_size: Tuple[int, int] = (224, 224),
+        n_channels: int = 3,
+        n_qubits: int = 8,
+        n_quantum_layers: int = 2,
+        feature_dim: int = 256,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    ):
         """
         Initialize quantum vision system.
         
         Args:
-            config: Configuration parameters
+            image_size: Input image dimensions (height, width)
+            n_channels: Number of input channels
+            n_qubits: Number of qubits for quantum operations
+            n_quantum_layers: Number of quantum layers
+            feature_dim: Feature dimension
+            device: Computation device
         """
-        super().__init__()
-        self.config = config
+        self.image_size = image_size
+        self.n_channels = n_channels
+        self.n_qubits = n_qubits
+        self.feature_dim = feature_dim
+        self.device = device
         
-        # Quantum components
-        self.quantum_encoder = QuantumImageEncoder(
-            image_size=config.image_size,
-            n_channels=config.n_channels,
-            n_qubits=config.n_qubits
+        # Initialize quantum components
+        self.quantum_register = QuantumRegister(n_qubits)
+        
+        # Feature extraction network
+        self.feature_extractor = QuantumFeatureExtractor(
+            image_size=image_size,
+            n_channels=n_channels,
+            n_qubits=n_qubits,
+            n_quantum_layers=n_quantum_layers,
+            feature_dim=feature_dim,
+            device=device
         )
         
-        self.quantum_processor = QuantumNeuralLayer(
-            QuantumNeuralConfig(
-                n_qubits=config.n_qubits,
-                n_quantum_layers=config.n_quantum_layers,
-                n_classical_layers=config.n_classical_layers,
-                learning_rate=config.learning_rate,
-                quantum_circuit_depth=config.quantum_circuit_depth
-            )
+        # Pattern recognition network
+        self.pattern_recognizer = QuantumPatternRecognizer(
+            feature_dim=feature_dim,
+            n_qubits=n_qubits,
+            device=device
         )
         
-        self.quantum_decoder = QuantumImageDecoder(
-            image_size=config.image_size,
-            n_channels=config.n_channels,
-            n_qubits=config.n_qubits
+        # Image reconstruction network
+        self.reconstructor = QuantumImageReconstructor(
+            feature_dim=feature_dim,
+            image_size=image_size,
+            n_channels=n_channels,
+            n_qubits=n_qubits,
+            device=device
         )
         
-        # Classical vision components
-        self.conv_layers = nn.ModuleList([
-            nn.Conv2d(config.n_channels, 64, kernel_size=3, padding=1),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1)
-        ])
-        
-        self.pool = nn.MaxPool2d(2)
-        
-        # Quantum-classical interface layers
-        self.quantum_interface = nn.Linear(
-            256 * (config.image_size[0]//8) * (config.image_size[1]//8),
-            2**config.n_qubits
-        )
-        
-        # Output layers
-        self.fc_layers = nn.ModuleList([
-            nn.Linear(2**config.n_qubits, 512),
-            nn.Linear(512, 256),
-            nn.Linear(256, config.n_channels * config.image_size[0] * config.image_size[1])
-        ])
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def process_image(
+        self,
+        image: torch.Tensor,
+        task: str = "classify",
+        **kwargs
+    ) -> Dict[str, Any]:
         """
-        Forward pass through the vision system.
+        Process image using quantum vision system.
         
         Args:
-            x: Input image tensor [batch_size, channels, height, width]
+            image: Input image tensor [batch_size, channels, height, width]
+            task: Processing task (classify, detect, segment, reconstruct)
+            **kwargs: Additional task-specific parameters
             
         Returns:
-            torch.Tensor: Processed output
+            Dictionary containing task results
         """
-        # Classical feature extraction
-        features = self._classical_feature_extraction(x)
+        # Extract quantum features
+        features = self.feature_extractor(image)
         
-        # Quantum processing
-        quantum_features = self._quantum_processing(features)
-        
-        # Image reconstruction
-        output = self._reconstruct_image(quantum_features)
-        
-        return output
-        
-    def process_image(self, image: torch.Tensor) -> Dict[str, torch.Tensor]:
-        """
-        Process single image through quantum-classical pipeline.
-        
-        Args:
-            image: Input image tensor [channels, height, width]
+        # Process based on task
+        if task == "classify":
+            return self.pattern_recognizer.classify(features, **kwargs)
             
-        Returns:
-            Dict[str, torch.Tensor]: Dictionary containing processed results
-        """
-        # Add batch dimension
-        x = image.unsqueeze(0)
-        
-        # Classical processing
-        classical_features = self._classical_feature_extraction(x)
-        
-        # Quantum encoding
-        quantum_state = self.quantum_encoder(classical_features)
-        
-        # Quantum processing
-        processed_state = self.quantum_processor(quantum_state)
-        
-        # Quantum decoding
-        reconstructed = self.quantum_decoder(processed_state)
-        
-        # Remove batch dimension
-        reconstructed = reconstructed.squeeze(0)
-        
-        return {
-            'original': image,
-            'reconstructed': reconstructed,
-            'quantum_state': processed_state.squeeze(0),
-            'features': classical_features.squeeze(0)
-        }
-        
-    def _classical_feature_extraction(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Extract classical features from input image.
-        
-        Args:
-            x: Input tensor
+        elif task == "detect":
+            return self.pattern_recognizer.detect_objects(features, **kwargs)
             
-        Returns:
-            torch.Tensor: Extracted features
-        """
-        # Apply convolution layers with pooling
-        for conv in self.conv_layers:
-            x = F.relu(conv(x))
-            x = self.pool(x)
+        elif task == "segment":
+            return self.pattern_recognizer.segment_image(features, **kwargs)
             
-        # Flatten features
-        batch_size = x.size(0)
-        features = x.view(batch_size, -1)
-        
-        # Project to quantum dimension
-        features = self.quantum_interface(features)
-        
-        return features
-        
-    def _quantum_processing(self, features: torch.Tensor) -> torch.Tensor:
-        """
-        Process features through quantum circuit.
-        
-        Args:
-            features: Classical features
+        elif task == "reconstruct":
+            return self.reconstructor(features, **kwargs)
             
-        Returns:
-            torch.Tensor: Quantum processed features
-        """
-        # Encode into quantum state
-        quantum_state = self.quantum_encoder(features)
-        
-        # Apply quantum processing
-        processed_state = self.quantum_processor(quantum_state)
-        
-        return processed_state
-        
-    def _reconstruct_image(self, quantum_features: torch.Tensor) -> torch.Tensor:
-        """
-        Reconstruct image from quantum features.
-        
-        Args:
-            quantum_features: Quantum processed features
+        else:
+            raise ValueError(f"Unsupported task: {task}")
             
-        Returns:
-            torch.Tensor: Reconstructed image
+    def quantum_feature_analysis(
+        self,
+        image: torch.Tensor
+    ) -> Dict[str, Any]:
         """
-        # Decode quantum state
-        classical_features = self.quantum_decoder(quantum_features)
-        
-        # Apply fully connected layers
-        x = classical_features
-        for fc in self.fc_layers[:-1]:
-            x = F.relu(fc(x))
-        x = self.fc_layers[-1](x)
-        
-        # Reshape to image dimensions
-        batch_size = x.size(0)
-        x = x.view(batch_size, self.config.n_channels, 
-                  self.config.image_size[0], self.config.image_size[1])
-        
-        return torch.sigmoid(x)  # Ensure pixel values in [0,1]
-        
-    def quantum_feature_analysis(self, image: torch.Tensor) -> Dict[str, np.ndarray]:
-        """
-        Analyze quantum features of an image.
+        Analyze quantum features of image.
         
         Args:
             image: Input image tensor
             
         Returns:
-            Dict[str, np.ndarray]: Analysis results
+            Dictionary of quantum feature statistics
         """
+        # Get quantum features
+        features = self.feature_extractor(image)
+        
+        # Analyze quantum states
+        states = self.feature_extractor.quantum_state_analysis(features)
+        
+        # Calculate feature statistics
+        stats = {
+            'feature_mean': features.mean().item(),
+            'feature_std': features.std().item(),
+            'quantum_states': states,
+            'entanglement_measure': self._calculate_entanglement(states)
+        }
+        
+        return stats
+    
+    def _calculate_entanglement(
+        self,
+        quantum_states: List[Dict]
+    ) -> float:
+        """
+        Calculate quantum entanglement measure.
+        
+        Args:
+            quantum_states: List of quantum states
+            
+        Returns:
+            Entanglement measure
+        """
+        # Reset quantum register
+        self.quantum_register.reset()
+        
+        # Apply quantum operations based on states
+        for state_dict in quantum_states:
+            for layer_name, stats in state_dict.items():
+                # Use statistics to guide quantum operations
+                mean_angle = stats['mean'] * np.pi
+                std_angle = stats['std'] * np.pi
+                
+                # Apply rotations
+                for qubit in range(self.n_qubits):
+                    self.quantum_register.apply_gate(
+                        QuantumGate(GateType.Ry, {'theta': mean_angle}),
+                        [qubit]
+                    )
+                    self.quantum_register.apply_gate(
+                        QuantumGate(GateType.Rz, {'theta': std_angle}),
+                        [qubit]
+                    )
+                
+                # Entangle qubits
+                for i in range(self.n_qubits - 1):
+                    self.quantum_register.apply_gate(
+                        QuantumGate(GateType.CNOT),
+                        [i, i + 1]
+                    )
+        
+        # Calculate entanglement from final state
+        final_state = self.quantum_register.get_state()
+        density_matrix = np.outer(final_state, np.conj(final_state))
+        
+        # Calculate von Neumann entropy as entanglement measure
+        eigenvalues = np.linalg.eigvalsh(density_matrix)
+        eigenvalues = eigenvalues[eigenvalues > 0]  # Remove zero eigenvalues
+        entropy = -np.sum(eigenvalues * np.log2(eigenvalues))
+        
+        return entropy
+    
+    def save_model(self, path: str) -> None:
+        """Save model parameters."""
+        torch.save({
+            'feature_extractor': self.feature_extractor.state_dict(),
+            'pattern_recognizer': self.pattern_recognizer.state_dict(),
+            'reconstructor': self.reconstructor.state_dict()
+        }, path)
+    
+    def load_model(self, path: str) -> None:
+        """Load model parameters."""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.feature_extractor.load_state_dict(checkpoint['feature_extractor'])
+        self.pattern_recognizer.load_state_dict(checkpoint['pattern_recognizer'])
+        self.reconstructor.load_state_dict(checkpoint['reconstructor'])
+        
+class QuantumFeatureExtractor(nn.Module):
+    """Quantum-enhanced feature extraction network."""
+    
+    def __init__(
+        self,
+        image_size: Tuple[int, int],
+        n_channels: int,
+        n_qubits: int,
+        n_quantum_layers: int,
+        feature_dim: int,
+        device: str
+    ):
+        """Initialize feature extractor."""
+        super().__init__()
+        
+        # CNN layers
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(n_channels, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2)
+        ).to(device)
+        
+        # Calculate feature map size
         with torch.no_grad():
-            # Process image
-            results = self.process_image(image)
-            
-            # Analyze quantum state
-            quantum_state = results['quantum_state'].numpy()
-            
-            # Calculate quantum properties
-            entanglement = self._calculate_entanglement(quantum_state)
-            interference = self._calculate_interference(quantum_state)
-            
-            return {
-                'quantum_state': quantum_state,
-                'entanglement_measure': entanglement,
-                'interference_pattern': interference
-            }
-            
-    def _calculate_entanglement(self, quantum_state: np.ndarray) -> np.ndarray:
-        """
-        Calculate entanglement measures for quantum state.
+            dummy_input = torch.zeros(1, n_channels, *image_size).to(device)
+            feature_map = self.conv_layers(dummy_input)
+            feature_map_size = feature_map.view(1, -1).size(1)
         
-        Args:
-            quantum_state: Quantum state vector
-            
-        Returns:
-            np.ndarray: Entanglement measures
-        """
-        # Reshape to qubit structure
-        n_qubits = self.config.n_qubits
-        state_matrix = quantum_state.reshape((2,) * n_qubits)
+        # Quantum layers
+        self.quantum_layers = nn.ModuleList([
+            QuantumNeuralLayer(
+                n_qubits=n_qubits,
+                n_quantum_layers=n_quantum_layers,
+                n_classical_features=feature_map_size,
+                device=device
+            )
+            for _ in range(2)
+        ]).to(device)
         
-        # Calculate reduced density matrices
-        entanglement_measures = np.zeros(n_qubits)
+        # Output projection
+        self.output_projection = nn.Linear(
+            feature_map_size,
+            feature_dim
+        ).to(device)
         
-        for i in range(n_qubits):
-            # Trace out other qubits
-            reduced_matrix = np.trace(state_matrix, axis1=i, axis2=i+1)
-            
-            # Calculate von Neumann entropy
-            eigenvalues = np.linalg.eigvalsh(reduced_matrix)
-            entropy = -np.sum(eigenvalues * np.log2(eigenvalues + 1e-10))
-            
-            entanglement_measures[i] = entropy
-            
-        return entanglement_measures
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass."""
+        # CNN feature extraction
+        features = self.conv_layers(x)
+        features = features.view(features.size(0), -1)
         
-    def _calculate_interference(self, quantum_state: np.ndarray) -> np.ndarray:
-        """
-        Calculate quantum interference patterns.
+        # Quantum processing
+        for quantum_layer in self.quantum_layers:
+            features = quantum_layer(features)
         
-        Args:
-            quantum_state: Quantum state vector
+        # Output projection
+        features = self.output_projection(features)
+        
+        return features
+        
+    def quantum_state_analysis(
+        self,
+        features: torch.Tensor
+    ) -> List[Dict]:
+        """Analyze quantum states through network."""
+        states = []
+        
+        # Analyze each quantum layer
+        for i, layer in enumerate(self.quantum_layers):
+            states.extend(layer.quantum_state_analysis(features))
             
-        Returns:
-            np.ndarray: Interference patterns
-        """
-        # Calculate amplitude and phase
-        amplitudes = np.abs(quantum_state)
-        phases = np.angle(quantum_state)
+        return states
         
-        # Calculate interference pattern
-        interference = np.zeros_like(amplitudes)
-        for i in range(len(quantum_state)):
-            for j in range(len(quantum_state)):
-                interference[i] += amplitudes[i] * amplitudes[j] * \
-                                 np.cos(phases[i] - phases[j])
-                                 
-        return interference
+class QuantumPatternRecognizer(nn.Module):
+    """Quantum pattern recognition network."""
+    
+    def __init__(
+        self,
+        feature_dim: int,
+        n_qubits: int,
+        n_classes: int = 1000,
+        device: str = "cuda"
+    ):
+        """Initialize pattern recognizer."""
+        super().__init__()
+        
+        self.n_qubits = n_qubits
+        self.device = device
+        
+        # Quantum processing
+        self.quantum_layer = QuantumNeuralLayer(
+            n_qubits=n_qubits,
+            n_classical_features=feature_dim,
+            device=device
+        )
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, n_classes)
+        ).to(device)
+        
+        # Object detection head
+        self.detector = nn.Sequential(
+            nn.Linear(feature_dim, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, 4)  # [x, y, width, height]
+        ).to(device)
+        
+        # Segmentation head
+        self.segmenter = nn.Sequential(
+            nn.Linear(feature_dim, 1024),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 256 * 256)  # Assuming max 256x256 segmentation
+        ).to(device)
+        
+    def classify(
+        self,
+        features: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Classify features."""
+        features = self.quantum_layer(features)
+        logits = self.classifier(features)
+        probs = torch.softmax(logits, dim=1)
+        
+        return {
+            'logits': logits,
+            'probabilities': probs
+        }
+    
+    def detect_objects(
+        self,
+        features: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Detect objects in features."""
+        features = self.quantum_layer(features)
+        boxes = self.detector(features)
+        
+        return {
+            'boxes': boxes
+        }
+    
+    def segment_image(
+        self,
+        features: torch.Tensor,
+        image_size: Tuple[int, int] = (256, 256),
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Generate segmentation mask."""
+        features = self.quantum_layer(features)
+        mask_flat = self.segmenter(features)
+        mask = mask_flat.view(-1, 1, *image_size)
+        
+        return {
+            'mask': mask
+        }
+        
+class QuantumImageReconstructor(nn.Module):
+    """Quantum image reconstruction network."""
+    
+    def __init__(
+        self,
+        feature_dim: int,
+        image_size: Tuple[int, int],
+        n_channels: int,
+        n_qubits: int,
+        device: str
+    ):
+        """Initialize reconstructor."""
+        super().__init__()
+        
+        self.image_size = image_size
+        self.n_channels = n_channels
+        
+        # Quantum processing
+        self.quantum_layer = QuantumNeuralLayer(
+            n_qubits=n_qubits,
+            n_classical_features=feature_dim,
+            device=device
+        )
+        
+        # Upsampling layers
+        self.decoder = nn.Sequential(
+            nn.Linear(feature_dim, 256 * 8 * 8),
+            nn.ReLU(),
+            nn.Unflatten(1, (256, 8, 8)),
+            nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, n_channels, 4, stride=2, padding=1),
+            nn.Sigmoid()
+        ).to(device)
+        
+    def forward(
+        self,
+        features: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Reconstruct image from features."""
+        features = self.quantum_layer(features)
+        reconstruction = self.decoder(features)
+        
+        return {
+            'reconstruction': reconstruction
+        }
