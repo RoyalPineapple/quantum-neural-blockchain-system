@@ -1,284 +1,277 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from typing import List, Optional, Tuple, Dict, Any
-from dataclasses import dataclass
-
+from typing import List, Optional, Dict, Any, Tuple, Union
 from ...quantum.core.quantum_register import QuantumRegister
-from ...neural.core.quantum_neural_layer import QuantumNeuralLayer, QuantumNeuralConfig
-from ..utils.quantum_control import QuantumController
-from ..utils.trajectory import TrajectoryOptimizer
+from ...quantum.utils.gates import QuantumGate, GateType
+from ...neural.core.quantum_neural_layer import QuantumNeuralLayer
 
-@dataclass
-class QuantumRoboticsConfig:
-    """Configuration for Quantum Robotics System."""
-    n_joints: int
-    n_qubits_per_joint: int
-    n_quantum_layers: int
-    control_frequency: float
-    learning_rate: float
-    quantum_circuit_depth: int
-    state_dim: int
-    action_dim: int
-
-class QuantumRoboticsSystem(nn.Module):
+class QuantumRoboticsSystem:
     """
-    Quantum-enhanced robotics control system.
-    Combines quantum computing with classical robotics control.
+    Quantum-enhanced robotics control system combining quantum computing
+    with classical control theory for advanced robotics applications.
     """
     
-    def __init__(self, config: QuantumRoboticsConfig):
+    def __init__(
+        self,
+        n_qubits: int = 8,
+        state_dim: int = 12,  # position, velocity, orientation
+        action_dim: int = 6,  # 3D force and torque
+        n_agents: int = 1,
+        planning_horizon: int = 100,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    ):
         """
         Initialize quantum robotics system.
         
         Args:
-            config: Configuration parameters
+            n_qubits: Number of qubits for quantum operations
+            state_dim: Dimension of robot state space
+            action_dim: Dimension of action space
+            n_agents: Number of robots in swarm
+            planning_horizon: Time horizon for planning
+            device: Computation device
         """
-        super().__init__()
-        self.config = config
+        self.n_qubits = n_qubits
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.n_agents = n_agents
+        self.planning_horizon = planning_horizon
+        self.device = device
         
-        # Calculate total number of qubits
-        self.total_qubits = config.n_joints * config.n_qubits_per_joint
+        # Initialize quantum components
+        self.quantum_register = QuantumRegister(n_qubits)
         
-        # Quantum controller
-        self.quantum_controller = QuantumController(
-            n_qubits=self.total_qubits,
-            n_quantum_layers=config.n_quantum_layers,
-            control_frequency=config.control_frequency
+        # Trajectory optimization
+        self.trajectory_optimizer = QuantumTrajectoryOptimizer(
+            n_qubits=n_qubits,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            horizon=planning_horizon,
+            device=device
         )
         
-        # Quantum neural processing
-        self.quantum_processor = QuantumNeuralLayer(
-            QuantumNeuralConfig(
-                n_qubits=self.total_qubits,
-                n_quantum_layers=config.n_quantum_layers,
-                n_classical_layers=2,
-                learning_rate=config.learning_rate,
-                quantum_circuit_depth=config.quantum_circuit_depth
-            )
+        # Motion planning
+        self.motion_planner = QuantumMotionPlanner(
+            n_qubits=n_qubits,
+            state_dim=state_dim,
+            device=device
         )
         
-        # Trajectory optimizer
-        self.trajectory_optimizer = TrajectoryOptimizer(
-            state_dim=config.state_dim,
-            action_dim=config.action_dim,
-            n_qubits=self.total_qubits
+        # Real-time control
+        self.controller = QuantumController(
+            n_qubits=n_qubits,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            device=device
         )
         
-        # State estimation layers
-        self.state_encoder = nn.Sequential(
-            nn.Linear(config.state_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 2**self.total_qubits)
+        # Swarm coordination
+        self.swarm_coordinator = QuantumSwarmCoordinator(
+            n_qubits=n_qubits,
+            n_agents=n_agents,
+            state_dim=state_dim,
+            device=device
         )
         
-        self.state_decoder = nn.Sequential(
-            nn.Linear(2**self.total_qubits, 256),
-            nn.ReLU(),
-            nn.Linear(256, config.state_dim)
+        # State estimation
+        self.state_estimator = QuantumStateEstimator(
+            n_qubits=n_qubits,
+            state_dim=state_dim,
+            device=device
         )
         
-    def forward(self, state: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Forward pass through the robotics system.
-        
-        Args:
-            state: Current robot state
-            
-        Returns:
-            Tuple[torch.Tensor, Dict[str, torch.Tensor]]: Control action and info
-        """
-        # Encode state into quantum representation
-        quantum_state = self._encode_state(state)
-        
-        # Quantum processing
-        processed_state = self.quantum_processor(quantum_state)
-        
-        # Generate control action
-        control_action, control_info = self.quantum_controller(processed_state)
-        
-        return control_action, control_info
-        
-    def plan_trajectory(self, start_state: torch.Tensor,
-                       goal_state: torch.Tensor,
-                       constraints: Optional[Dict[str, Any]] = None) -> Dict[str, torch.Tensor]:
+    def plan_trajectory(
+        self,
+        start_state: torch.Tensor,
+        goal_state: torch.Tensor,
+        obstacles: Optional[List[Dict[str, torch.Tensor]]] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
         """
         Plan optimal trajectory using quantum optimization.
         
         Args:
-            start_state: Initial state
-            goal_state: Target state
-            constraints: Optional trajectory constraints
+            start_state: Initial robot state
+            goal_state: Target robot state
+            obstacles: List of obstacle states and geometries
             
         Returns:
-            Dict[str, torch.Tensor]: Planned trajectory and metadata
+            Dictionary containing planned trajectory and metadata
         """
-        # Encode states into quantum representation
-        start_quantum = self._encode_state(start_state)
-        goal_quantum = self._encode_state(goal_state)
-        
-        # Optimize trajectory
-        trajectory = self.trajectory_optimizer.optimize(
-            start_quantum,
-            goal_quantum,
-            constraints
+        # Get collision-free path
+        path = self.motion_planner.plan_path(
+            start_state,
+            goal_state,
+            obstacles
         )
         
-        # Decode trajectory
-        classical_trajectory = self._decode_trajectory(trajectory)
+        # Optimize trajectory along path
+        trajectory = self.trajectory_optimizer.optimize(
+            path,
+            start_state,
+            goal_state,
+            **kwargs
+        )
         
-        return {
-            'quantum_trajectory': trajectory,
-            'classical_trajectory': classical_trajectory,
-            'start_state': start_state,
-            'goal_state': goal_state
-        }
-        
-    def execute_trajectory(self, trajectory: Dict[str, torch.Tensor],
-                         feedback: bool = True) -> Dict[str, torch.Tensor]:
+        return trajectory
+    
+    def compute_control(
+        self,
+        current_state: torch.Tensor,
+        desired_state: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
         """
-        Execute planned trajectory with optional feedback control.
+        Compute control actions using quantum controller.
         
         Args:
-            trajectory: Planned trajectory
-            feedback: Whether to use feedback control
+            current_state: Current robot state
+            desired_state: Desired robot state
             
         Returns:
-            Dict[str, torch.Tensor]: Execution results
+            Dictionary containing control actions and metadata
         """
-        quantum_trajectory = trajectory['quantum_trajectory']
-        classical_trajectory = trajectory['classical_trajectory']
+        return self.controller.compute_action(
+            current_state,
+            desired_state,
+            **kwargs
+        )
+    
+    def coordinate_swarm(
+        self,
+        swarm_states: torch.Tensor,
+        swarm_goals: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Coordinate swarm behavior using quantum entanglement.
         
-        execution_log = []
-        actual_states = []
-        control_actions = []
-        
-        current_state = classical_trajectory[0]
-        
-        for t in range(len(classical_trajectory)):
-            # Get desired state for this timestep
-            desired_state = classical_trajectory[t]
+        Args:
+            swarm_states: States of all robots in swarm
+            swarm_goals: Goal states for all robots
             
-            if feedback:
-                # Generate feedback control action
-                control_action, info = self(current_state)
-            else:
-                # Use feedforward control from trajectory
-                control_action = quantum_trajectory[t]
+        Returns:
+            Dictionary containing coordinated actions and metadata
+        """
+        return self.swarm_coordinator.coordinate(
+            swarm_states,
+            swarm_goals,
+            **kwargs
+        )
+    
+    def estimate_state(
+        self,
+        sensor_data: torch.Tensor,
+        previous_state: Optional[torch.Tensor] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Estimate robot state using quantum-enhanced filtering.
+        
+        Args:
+            sensor_data: Raw sensor measurements
+            previous_state: Previous robot state estimate
+            
+        Returns:
+            Dictionary containing state estimate and uncertainty
+        """
+        return self.state_estimator.estimate(
+            sensor_data,
+            previous_state,
+            **kwargs
+        )
+    
+    def quantum_analysis(
+        self,
+        trajectory: torch.Tensor
+    ) -> Dict[str, Any]:
+        """
+        Analyze quantum properties of robotics system.
+        
+        Args:
+            trajectory: Robot trajectory to analyze
+            
+        Returns:
+            Dictionary of quantum analysis results
+        """
+        # Analyze quantum states
+        states = []
+        
+        # Trajectory optimization analysis
+        states.extend(
+            self.trajectory_optimizer.quantum_state_analysis(trajectory)
+        )
+        
+        # Controller analysis
+        states.extend(
+            self.controller.quantum_state_analysis(trajectory)
+        )
+        
+        # Calculate entanglement
+        entanglement = self._calculate_entanglement(states)
+        
+        return {
+            'quantum_states': states,
+            'entanglement_measure': entanglement
+        }
+    
+    def _calculate_entanglement(
+        self,
+        quantum_states: List[Dict]
+    ) -> float:
+        """Calculate quantum entanglement measure."""
+        # Reset quantum register
+        self.quantum_register.reset()
+        
+        # Apply quantum operations based on states
+        for state_dict in quantum_states:
+            for layer_name, stats in state_dict.items():
+                mean_angle = stats['mean'] * np.pi
+                std_angle = stats['std'] * np.pi
                 
-            # Simulate execution (in real system, this would be actual robot execution)
-            next_state = self._simulate_dynamics(current_state, control_action)
-            
-            # Log execution
-            execution_log.append({
-                'timestep': t,
-                'desired_state': desired_state,
-                'actual_state': next_state,
-                'control_action': control_action
-            })
-            
-            actual_states.append(next_state)
-            control_actions.append(control_action)
-            current_state = next_state
-            
-        return {
-            'executed_trajectory': torch.stack(actual_states),
-            'control_actions': torch.stack(control_actions),
-            'execution_log': execution_log
-        }
-        
-    def _encode_state(self, state: torch.Tensor) -> torch.Tensor:
-        """
-        Encode classical state into quantum representation.
-        
-        Args:
-            state: Classical state vector
-            
-        Returns:
-            torch.Tensor: Quantum state encoding
-        """
-        # Project state to quantum dimension
-        quantum_features = self.state_encoder(state)
-        
-        # Initialize quantum register
-        qreg = QuantumRegister(self.total_qubits)
-        
-        # Encode state into quantum register
-        quantum_state = torch.zeros(2**self.total_qubits, dtype=torch.complex64)
-        
-        for i in range(self.config.n_joints):
-            # Calculate qubit range for this joint
-            start_qubit = i * self.config.n_qubits_per_joint
-            end_qubit = start_qubit + self.config.n_qubits_per_joint
-            
-            # Encode joint state
-            joint_state = quantum_features[start_qubit:end_qubit]
-            
-            # Apply quantum encoding operations
-            for j, value in enumerate(joint_state):
-                if abs(value) > 1e-6:  # Threshold for numerical stability
-                    qreg.apply_gate(
-                        self._create_encoding_gate(value),
-                        start_qubit + j
+                # Apply rotations
+                for qubit in range(self.n_qubits):
+                    self.quantum_register.apply_gate(
+                        QuantumGate(GateType.Ry, {'theta': mean_angle}),
+                        [qubit]
                     )
-                    
-        return torch.from_numpy(qreg.measure())
+                    self.quantum_register.apply_gate(
+                        QuantumGate(GateType.Rz, {'theta': std_angle}),
+                        [qubit]
+                    )
+                
+                # Entangle qubits
+                for i in range(self.n_qubits - 1):
+                    self.quantum_register.apply_gate(
+                        QuantumGate(GateType.CNOT),
+                        [i, i + 1]
+                    )
         
-    def _decode_trajectory(self, quantum_trajectory: torch.Tensor) -> torch.Tensor:
-        """
-        Decode quantum trajectory to classical states.
+        # Calculate entanglement
+        final_state = self.quantum_register.get_state()
+        density_matrix = np.outer(final_state, np.conj(final_state))
+        eigenvalues = np.linalg.eigvalsh(density_matrix)
+        eigenvalues = eigenvalues[eigenvalues > 0]
+        entropy = -np.sum(eigenvalues * np.log2(eigenvalues))
         
-        Args:
-            quantum_trajectory: Quantum trajectory representation
-            
-        Returns:
-            torch.Tensor: Classical trajectory
-        """
-        # Initialize classical trajectory
-        trajectory_length = len(quantum_trajectory)
-        classical_trajectory = []
-        
-        # Decode each timestep
-        for t in range(trajectory_length):
-            quantum_state = quantum_trajectory[t]
-            classical_state = self.state_decoder(quantum_state)
-            classical_trajectory.append(classical_state)
-            
-        return torch.stack(classical_trajectory)
-        
-    def _simulate_dynamics(self, state: torch.Tensor,
-                         action: torch.Tensor) -> torch.Tensor:
-        """
-        Simulate robot dynamics (placeholder for real robot interface).
-        
-        Args:
-            state: Current state
-            action: Control action
-            
-        Returns:
-            torch.Tensor: Next state
-        """
-        # Simple discrete-time dynamics (replace with actual robot dynamics)
-        dt = 1.0 / self.config.control_frequency
-        next_state = state + action * dt
-        return next_state
-        
-    def _create_encoding_gate(self, value: float) -> np.ndarray:
-        """
-        Create quantum gate for state encoding.
-        
-        Args:
-            value: State value to encode
-            
-        Returns:
-            np.ndarray: Quantum gate matrix
-        """
-        # Create rotation gate based on state value
-        theta = np.arctan2(value, 1.0)
-        
-        gate = np.array([
-            [np.cos(theta), -np.sin(theta)],
-            [np.sin(theta), np.cos(theta)]
-        ], dtype=np.complex64)
-        
-        return gate
+        return entropy
+    
+    def save_model(self, path: str) -> None:
+        """Save model parameters."""
+        torch.save({
+            'trajectory_optimizer': self.trajectory_optimizer.state_dict(),
+            'motion_planner': self.motion_planner.state_dict(),
+            'controller': self.controller.state_dict(),
+            'swarm_coordinator': self.swarm_coordinator.state_dict(),
+            'state_estimator': self.state_estimator.state_dict()
+        }, path)
+    
+    def load_model(self, path: str) -> None:
+        """Load model parameters."""
+        checkpoint = torch.load(path, map_location=self.device)
+        self.trajectory_optimizer.load_state_dict(checkpoint['trajectory_optimizer'])
+        self.motion_planner.load_state_dict(checkpoint['motion_planner'])
+        self.controller.load_state_dict(checkpoint['controller'])
+        self.swarm_coordinator.load_state_dict(checkpoint['swarm_coordinator'])
+        self.state_estimator.load_state_dict(checkpoint['state_estimator'])
