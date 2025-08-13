@@ -1,346 +1,518 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from typing import Dict, Any, List, Optional
-from dataclasses import dataclass
-
+from typing import List, Optional, Dict, Any, Tuple
 from ....quantum.core.quantum_register import QuantumRegister
-from ....neural.core.quantum_neural_layer import QuantumNeuralLayer, QuantumNeuralConfig
+from ....quantum.utils.gates import QuantumGate, GateType
+from ....neural.core.quantum_transformer import QuantumTransformer
+from ....optimization.core.optimizer import QuantumOptimizer
 
-@dataclass
-class PortfolioConfig:
-    """Configuration for Quantum Portfolio Optimizer."""
-    risk_tolerance: float
-    max_position_size: float
-    min_position_size: float
-    rebalance_threshold: float
-    optimization_horizon: int
-    quantum_annealing_steps: int
-
-class QuantumPortfolioOptimizer:
+class QuantumPortfolioOptimizer(nn.Module):
     """
-    Quantum portfolio optimization using quantum annealing and neural networks.
+    Quantum-enhanced portfolio optimization using quantum computing
+    for efficient portfolio selection and rebalancing.
     """
     
-    def __init__(self, n_assets: int, n_qubits: int, risk_tolerance: float):
-        """
-        Initialize portfolio optimizer.
+    def __init__(
+        self,
+        n_assets: int,
+        n_qubits: int,
+        risk_tolerance: float,
+        hidden_dim: int = 256,
+        device: str = "cuda"
+    ):
+        """Initialize portfolio optimizer."""
+        super().__init__()
         
-        Args:
-            n_assets: Number of assets
-            n_qubits: Number of qubits for quantum optimization
-            risk_tolerance: Risk tolerance parameter
-        """
         self.n_assets = n_assets
         self.n_qubits = n_qubits
+        self.risk_tolerance = risk_tolerance
+        self.device = device
         
-        self.config = PortfolioConfig(
-            risk_tolerance=risk_tolerance,
-            max_position_size=0.3,  # Maximum 30% in single asset
-            min_position_size=0.01,  # Minimum 1% position
-            rebalance_threshold=0.05,  # 5% threshold for rebalancing
-            optimization_horizon=20,  # 20-step optimization
-            quantum_annealing_steps=100  # 100 annealing steps
+        # Quantum components
+        self.quantum_register = QuantumRegister(n_qubits)
+        self.quantum_optimizer = QuantumOptimizer(
+            n_qubits=n_qubits,
+            device=device
         )
         
-        # Initialize quantum components
+        # Portfolio encoding network
+        self.encoder = nn.Sequential(
+            nn.Linear(n_assets * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        ).to(device)
+        
+        # Portfolio generation network
+        self.generator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, n_assets),
+            nn.Softmax(dim=-1)
+        ).to(device)
+        
+    def optimize(
+        self,
+        returns: torch.Tensor,
+        predicted_returns: torch.Tensor,
+        risk_metrics: Dict[str, torch.Tensor],
+        constraints: Optional[List[Dict]] = None,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Optimize portfolio weights."""
+        # Encode portfolio data
+        portfolio_data = torch.cat([
+            returns.mean(dim=0),
+            risk_metrics['volatility']
+        ])
+        encoded_data = self.encoder(portfolio_data)
+        
+        # Define objective function
+        def objective_fn(weights: torch.Tensor) -> torch.Tensor:
+            # Expected return
+            exp_return = (weights * predicted_returns.mean(dim=0)).sum()
+            
+            # Risk penalty
+            risk = self._calculate_portfolio_risk(weights, risk_metrics)
+            
+            # Combine return and risk
+            return -(exp_return - self.risk_tolerance * risk)
+        
+        # Optimize using quantum optimizer
+        result = self.quantum_optimizer.optimize(
+            objective_fn=objective_fn,
+            initial_params=self.generator(encoded_data),
+            constraints=constraints,
+            **kwargs
+        )
+        
+        # Generate final portfolio
+        weights = self.generator(encoded_data)
+        
+        return {
+            'weights': weights,
+            'expected_return': (weights * predicted_returns.mean(dim=0)).sum(),
+            'risk': self._calculate_portfolio_risk(weights, risk_metrics),
+            'optimization_history': result['history']
+        }
+    
+    def _calculate_portfolio_risk(
+        self,
+        weights: torch.Tensor,
+        risk_metrics: Dict[str, torch.Tensor]
+    ) -> torch.Tensor:
+        """Calculate portfolio risk."""
+        # Volatility risk
+        vol_risk = (weights * risk_metrics['volatility']).sum()
+        
+        # Correlation risk
+        corr_risk = torch.matmul(
+            torch.matmul(weights, risk_metrics['correlation']),
+            weights
+        )
+        
+        # Value at Risk
+        var_risk = (weights * risk_metrics['var']).sum()
+        
+        # Combine risk metrics
+        total_risk = (
+            0.4 * vol_risk +
+            0.4 * corr_risk +
+            0.2 * var_risk
+        )
+        
+        return total_risk
+    
+    def quantum_state_analysis(
+        self,
+        market_data: torch.Tensor
+    ) -> List[Dict]:
+        """Analyze quantum states."""
+        states = []
+        
+        # Encode market data
+        encoded_data = self.encoder(market_data.view(-1))
+        
+        # Apply quantum operations
+        self.quantum_register.reset()
+        
+        for i in range(self.n_qubits):
+            # Apply rotations based on encoded data
+            angle = encoded_data[i % len(encoded_data)] * np.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle}),
+                [i]
+            )
+        
+        # Entangle qubits
+        for i in range(self.n_qubits - 1):
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.CNOT),
+                [i, i + 1]
+            )
+        
+        # Get quantum state
+        quantum_state = self.quantum_register.get_state()
+        
+        # Calculate statistics
+        states.append({
+            'portfolio_state': {
+                'mean': quantum_state.mean().item(),
+                'std': quantum_state.std().item(),
+                'min': quantum_state.min().item(),
+                'max': quantum_state.max().item(),
+                'norm': np.linalg.norm(quantum_state)
+            }
+        })
+        
+        return states
+
+class QuantumRiskAssessor(nn.Module):
+    """
+    Quantum-enhanced risk assessment using quantum computing
+    for advanced risk metrics calculation.
+    """
+    
+    def __init__(
+        self,
+        n_assets: int,
+        n_qubits: int,
+        lookback_window: int,
+        hidden_dim: int = 256,
+        device: str = "cuda"
+    ):
+        """Initialize risk assessor."""
+        super().__init__()
+        
+        self.n_assets = n_assets
+        self.n_qubits = n_qubits
+        self.lookback_window = lookback_window
+        self.device = device
+        
+        # Quantum components
         self.quantum_register = QuantumRegister(n_qubits)
         
-        # Quantum neural network for portfolio encoding
-        self.quantum_neural = QuantumNeuralLayer(
-            QuantumNeuralConfig(
-                n_qubits=n_qubits,
-                n_quantum_layers=3,
-                n_classical_layers=2,
-                learning_rate=0.01,
-                quantum_circuit_depth=3
-            )
-        )
+        # Risk assessment networks
+        self.volatility_net = nn.Sequential(
+            nn.Linear(lookback_window, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Softplus()
+        ).to(device)
         
-        # Portfolio state encoding parameters
-        self.encoding_params = nn.Parameter(
-            torch.randn(n_assets, n_qubits, 3)  # 3 angles per qubit
-        )
+        self.correlation_net = nn.Sequential(
+            nn.Linear(lookback_window * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Tanh()
+        ).to(device)
         
-        # Portfolio optimization parameters
-        self.optimization_params = nn.Parameter(
-            torch.randn(n_qubits, 3)  # 3 angles per qubit for optimization
-        )
+        self.var_net = nn.Sequential(
+            nn.Linear(lookback_window, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Softplus()
+        ).to(device)
         
-    def optimize(self, current_portfolio: Dict[str, Any],
-                predictions: Dict[str, Any],
-                risk_metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Optimize portfolio allocation using quantum algorithm.
-        
-        Args:
-            current_portfolio: Current portfolio state
-            predictions: Price movement predictions
-            risk_metrics: Risk analysis metrics
-            
-        Returns:
-            Dict[str, Any]: Optimized portfolio allocation
-        """
-        # Encode portfolio state
-        quantum_state = self._encode_portfolio_state(
-            current_portfolio,
-            predictions,
-            risk_metrics
-        )
-        
-        # Perform quantum optimization
-        optimal_state = self._quantum_optimize(quantum_state)
-        
-        # Decode optimal portfolio
-        optimal_portfolio = self._decode_portfolio_state(optimal_state)
-        
-        return optimal_portfolio
-        
-    def _encode_portfolio_state(self, portfolio: Dict[str, Any],
-                              predictions: Dict[str, Any],
-                              risk_metrics: Dict[str, Any]) -> torch.Tensor:
-        """
-        Encode portfolio state into quantum state.
-        
-        Args:
-            portfolio: Current portfolio
-            predictions: Price predictions
-            risk_metrics: Risk metrics
-            
-        Returns:
-            torch.Tensor: Quantum state encoding
-        """
-        # Reset quantum register
-        self.quantum_register = QuantumRegister(self.n_qubits)
-        
-        # Encode each asset
-        for i, (asset, position) in enumerate(portfolio['positions'].items()):
-            # Calculate qubit indices for this asset
-            start_qubit = (i * 3) % self.n_qubits
-            
-            # Encode position size
-            self._encode_value(
-                position / portfolio['total_value'],
-                start_qubit
-            )
-            
-            # Encode prediction
-            self._encode_value(
-                predictions[asset]['expected_return'],
-                (start_qubit + 1) % self.n_qubits
-            )
-            
-            # Encode risk
-            self._encode_value(
-                risk_metrics[asset]['risk_score'],
-                (start_qubit + 2) % self.n_qubits
-            )
-            
-        return torch.from_numpy(self.quantum_register.measure())
-        
-    def _quantum_optimize(self, initial_state: torch.Tensor) -> torch.Tensor:
-        """
-        Perform quantum optimization using quantum annealing.
-        
-        Args:
-            initial_state: Initial quantum state
-            
-        Returns:
-            torch.Tensor: Optimized quantum state
-        """
-        current_state = initial_state
-        
-        # Quantum annealing process
-        for step in range(self.config.quantum_annealing_steps):
-            # Calculate temperature parameter
-            temperature = 1.0 - step / self.config.quantum_annealing_steps
-            
-            # Apply quantum operations
-            current_state = self._apply_optimization_step(
-                current_state,
-                temperature
-            )
-            
-        return current_state
-        
-    def _apply_optimization_step(self, state: torch.Tensor,
-                               temperature: float) -> torch.Tensor:
-        """
-        Apply single optimization step.
-        
-        Args:
-            state: Current quantum state
-            temperature: Annealing temperature
-            
-        Returns:
-            torch.Tensor: Updated quantum state
-        """
-        # Initialize quantum register with state
-        self.quantum_register.quantum_states = state.numpy()
-        
-        # Apply optimization operations
-        for qubit in range(self.n_qubits):
-            # Get optimization parameters
-            params = self.optimization_params[qubit]
-            
-            # Scale parameters by temperature
-            scaled_params = params * temperature
-            
-            # Apply quantum gates
-            self._apply_optimization_gates(qubit, scaled_params)
-            
-        return torch.from_numpy(self.quantum_register.measure())
-        
-    def _apply_optimization_gates(self, qubit: int,
-                                params: torch.Tensor) -> None:
-        """
-        Apply optimization gates to qubit.
-        
-        Args:
-            qubit: Target qubit
-            params: Gate parameters
-        """
-        # Apply Rx rotation
-        self._apply_rx(qubit, params[0])
-        
-        # Apply Ry rotation
-        self._apply_ry(qubit, params[1])
-        
-        # Apply Rz rotation
-        self._apply_rz(qubit, params[2])
-        
-    def _apply_rx(self, qubit: int, angle: float) -> None:
-        """Apply Rx rotation."""
-        gate = np.array([
-            [np.cos(angle/2), -1j*np.sin(angle/2)],
-            [-1j*np.sin(angle/2), np.cos(angle/2)]
+    def assess_risk(
+        self,
+        returns: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """Calculate risk metrics."""
+        # Calculate volatility
+        volatility = torch.stack([
+            self.volatility_net(returns[:, i])
+            for i in range(self.n_assets)
         ])
-        self.quantum_register.apply_gate(gate, qubit)
         
-    def _apply_ry(self, qubit: int, angle: float) -> None:
-        """Apply Ry rotation."""
-        gate = np.array([
-            [np.cos(angle/2), -np.sin(angle/2)],
-            [np.sin(angle/2), np.cos(angle/2)]
-        ])
-        self.quantum_register.apply_gate(gate, qubit)
+        # Calculate correlation matrix
+        correlation = torch.zeros(
+            self.n_assets,
+            self.n_assets,
+            device=self.device
+        )
         
-    def _apply_rz(self, qubit: int, angle: float) -> None:
-        """Apply Rz rotation."""
-        gate = np.array([
-            [np.exp(-1j*angle/2), 0],
-            [0, np.exp(1j*angle/2)]
-        ])
-        self.quantum_register.apply_gate(gate, qubit)
-        
-    def _decode_portfolio_state(self, quantum_state: torch.Tensor) -> Dict[str, Any]:
-        """
-        Decode quantum state into portfolio allocation.
-        
-        Args:
-            quantum_state: Quantum state
-            
-        Returns:
-            Dict[str, Any]: Portfolio allocation
-        """
-        # Initialize portfolio allocation
-        allocation = {}
-        
-        # Decode each asset's allocation
         for i in range(self.n_assets):
-            # Calculate qubit indices
-            start_qubit = (i * 3) % self.n_qubits
-            
-            # Extract position size from quantum state
-            position_size = self._decode_value(
-                quantum_state[start_qubit:start_qubit+3]
-            )
-            
-            # Apply position size constraints
-            position_size = np.clip(
-                position_size,
-                self.config.min_position_size,
-                self.config.max_position_size
-            )
-            
-            allocation[f'asset_{i}'] = position_size
-            
-        # Normalize allocations to sum to 1
-        total_allocation = sum(allocation.values())
-        if total_allocation > 0:
-            allocation = {
-                asset: size/total_allocation
-                for asset, size in allocation.items()
-            }
-            
-        return {
-            'allocation': allocation,
-            'risk_score': self._calculate_risk_score(allocation),
-            'expected_return': self._calculate_expected_return(allocation)
-        }
+            for j in range(i + 1, self.n_assets):
+                corr = self.correlation_net(
+                    torch.cat([returns[:, i], returns[:, j]])
+                )
+                correlation[i, j] = corr
+                correlation[j, i] = corr
+                
+        correlation.diagonal().fill_(1.0)
         
-    def _encode_value(self, value: float, qubit: int) -> None:
-        """
-        Encode single value into qubit.
-        
-        Args:
-            value: Value to encode
-            qubit: Target qubit
-        """
-        # Create rotation gate based on value
-        theta = np.arccos(np.clip(value, -1, 1))
-        
-        gate = np.array([
-            [np.cos(theta/2), -np.sin(theta/2)],
-            [np.sin(theta/2), np.cos(theta/2)]
+        # Calculate Value at Risk
+        var = torch.stack([
+            self.var_net(returns[:, i])
+            for i in range(self.n_assets)
         ])
         
-        self.quantum_register.apply_gate(gate, qubit)
+        return {
+            'volatility': volatility,
+            'correlation': correlation,
+            'var': var
+        }
+    
+    def quantum_state_analysis(
+        self,
+        market_data: torch.Tensor
+    ) -> List[Dict]:
+        """Analyze quantum states."""
+        states = []
         
-    def _decode_value(self, quantum_state: torch.Tensor) -> float:
-        """
-        Decode value from quantum state.
+        # Reset quantum register
+        self.quantum_register.reset()
         
-        Args:
-            quantum_state: Quantum state
+        # Apply quantum operations based on risk metrics
+        risk_metrics = self.assess_risk(market_data)
+        
+        for i, vol in enumerate(risk_metrics['volatility']):
+            # Encode volatility
+            angle = vol.item() * np.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle}),
+                [i % self.n_qubits]
+            )
             
-        Returns:
-            float: Decoded value
-        """
-        # Calculate probability amplitudes
-        probabilities = torch.abs(quantum_state)**2
+            # Encode VaR
+            angle = risk_metrics['var'][i].item() * np.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Rz, {'theta': angle}),
+                [i % self.n_qubits]
+            )
         
-        # Convert to value in [0,1]
-        value = torch.sum(probabilities * torch.arange(len(probabilities)))
-        value = value / (len(probabilities) - 1)  # Normalize
+        # Entangle based on correlations
+        for i in range(self.n_qubits - 1):
+            if risk_metrics['correlation'][i, i+1] > 0:
+                self.quantum_register.apply_gate(
+                    QuantumGate(GateType.CNOT),
+                    [i, i + 1]
+                )
         
-        return value.item()
+        # Get quantum state
+        quantum_state = self.quantum_register.get_state()
         
-    def _calculate_risk_score(self, allocation: Dict[str, float]) -> float:
-        """
-        Calculate risk score for portfolio allocation.
+        # Calculate statistics
+        states.append({
+            'risk_state': {
+                'mean': quantum_state.mean().item(),
+                'std': quantum_state.std().item(),
+                'min': quantum_state.min().item(),
+                'max': quantum_state.max().item(),
+                'norm': np.linalg.norm(quantum_state)
+            }
+        })
         
-        Args:
-            allocation: Portfolio allocation
+        return states
+
+class QuantumPricePredictor(nn.Module):
+    """
+    Quantum-enhanced price prediction using quantum computing
+    and neural networks for market forecasting.
+    """
+    
+    def __init__(
+        self,
+        n_assets: int,
+        n_qubits: int,
+        lookback_window: int,
+        prediction_horizon: int,
+        hidden_dim: int = 256,
+        device: str = "cuda"
+    ):
+        """Initialize price predictor."""
+        super().__init__()
+        
+        self.n_assets = n_assets
+        self.n_qubits = n_qubits
+        self.lookback_window = lookback_window
+        self.prediction_horizon = prediction_horizon
+        self.device = device
+        
+        # Quantum transformer for time series
+        self.transformer = QuantumTransformer(
+            n_qubits=n_qubits,
+            d_model=hidden_dim,
+            n_heads=8,
+            n_layers=6,
+            device=device
+        )
+        
+        # Prediction heads
+        self.prediction_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, prediction_horizon)
+        ).to(device)
+        
+        # Uncertainty estimation
+        self.uncertainty_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, prediction_horizon),
+            nn.Softplus()
+        ).to(device)
+        
+    def predict(
+        self,
+        returns: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        """Predict future returns."""
+        # Process through transformer
+        features = self.transformer(returns)
+        
+        # Generate predictions for each asset
+        predictions = []
+        uncertainties = []
+        
+        for i in range(self.n_assets):
+            asset_features = features[:, i]
             
-        Returns:
-            float: Risk score
-        """
-        # Simplified risk calculation
-        # In practice, would use more sophisticated risk models
-        concentration_risk = np.sum([x**2 for x in allocation.values()])
-        return concentration_risk
-        
-    def _calculate_expected_return(self, allocation: Dict[str, float]) -> float:
-        """
-        Calculate expected return for portfolio allocation.
-        
-        Args:
-            allocation: Portfolio allocation
+            # Predict returns
+            pred = self.prediction_head(asset_features)
+            predictions.append(pred)
             
-        Returns:
-            float: Expected return
-        """
-        # Simplified return calculation
-        # In practice, would use more sophisticated return models
-        return np.mean(list(allocation.values()))
+            # Estimate uncertainty
+            uncert = self.uncertainty_head(asset_features)
+            uncertainties.append(uncert)
+        
+        predictions = torch.stack(predictions)
+        uncertainties = torch.stack(uncertainties)
+        
+        return {
+            'predictions': predictions,
+            'uncertainties': uncertainties
+        }
+    
+    def quantum_state_analysis(
+        self,
+        market_data: torch.Tensor
+    ) -> List[Dict]:
+        """Analyze quantum states."""
+        return self.transformer.quantum_state_analysis(market_data)
+
+class QuantumTradingStrategy(nn.Module):
+    """
+    Quantum-enhanced trading strategy using quantum computing
+    for optimal trade execution.
+    """
+    
+    def __init__(
+        self,
+        n_assets: int,
+        n_qubits: int,
+        hidden_dim: int = 256,
+        device: str = "cuda"
+    ):
+        """Initialize trading strategy."""
+        super().__init__()
+        
+        self.n_assets = n_assets
+        self.n_qubits = n_qubits
+        self.device = device
+        
+        # Quantum components
+        self.quantum_register = QuantumRegister(n_qubits)
+        
+        # Strategy networks
+        self.market_encoder = nn.Sequential(
+            nn.Linear(n_assets * 3, hidden_dim),  # price, volume, volatility
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU()
+        ).to(device)
+        
+        self.action_generator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, n_assets * 3)  # buy, hold, sell
+        ).to(device)
+        
+        self.position_sizer = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, n_assets),
+            nn.Sigmoid()
+        ).to(device)
+        
+    def execute(
+        self,
+        current_portfolio: torch.Tensor,
+        market_data: torch.Tensor,
+        **kwargs
+    ) -> Dict[str, torch.Tensor]:
+        """Execute trading strategy."""
+        # Encode market state
+        market_state = self.market_encoder(market_data.view(-1))
+        
+        # Generate trading actions
+        actions = self.action_generator(market_state)
+        actions = actions.view(self.n_assets, 3)
+        actions = torch.softmax(actions, dim=1)  # probabilities for buy/hold/sell
+        
+        # Determine position sizes
+        position_sizes = self.position_sizer(market_state)
+        
+        # Combine actions and sizes
+        trades = torch.zeros(self.n_assets, device=self.device)
+        
+        for i in range(self.n_assets):
+            action_probs = actions[i]
+            size = position_sizes[i]
+            
+            if action_probs[0] > action_probs[2]:  # buy > sell
+                trades[i] = size
+            elif action_probs[2] > action_probs[0]:  # sell > buy
+                trades[i] = -size
+        
+        return {
+            'trades': trades,
+            'action_probabilities': actions,
+            'position_sizes': position_sizes
+        }
+    
+    def quantum_state_analysis(
+        self,
+        market_data: torch.Tensor
+    ) -> List[Dict]:
+        """Analyze quantum states."""
+        states = []
+        
+        # Encode market data
+        market_state = self.market_encoder(market_data.view(-1))
+        
+        # Apply quantum operations
+        self.quantum_register.reset()
+        
+        for i in range(self.n_qubits):
+            # Encode market state
+            angle = market_state[i % len(market_state)] * np.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle}),
+                [i]
+            )
+        
+        # Entangle qubits
+        for i in range(self.n_qubits - 1):
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.CNOT),
+                [i, i + 1]
+            )
+        
+        # Get quantum state
+        quantum_state = self.quantum_register.get_state()
+        
+        # Calculate statistics
+        states.append({
+            'trading_state': {
+                'mean': quantum_state.mean().item(),
+                'std': quantum_state.std().item(),
+                'min': quantum_state.min().item(),
+                'max': quantum_state.max().item(),
+                'norm': np.linalg.norm(quantum_state)
+            }
+        })
+        
+        return states
