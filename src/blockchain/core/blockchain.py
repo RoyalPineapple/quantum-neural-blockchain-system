@@ -1,277 +1,135 @@
-import hashlib
-import time
-from typing import List, Optional, Dict, Any
-from dataclasses import dataclass
-import json
 import numpy as np
-from ..utils.cryptography import QuantumSignature, generate_quantum_signature
-from ..utils.consensus import QuantumConsensus
-
-@dataclass
-class Transaction:
-    """Represents a quantum-secured blockchain transaction."""
-    sender: str
-    receiver: str
-    amount: float
-    quantum_signature: Optional[QuantumSignature] = None
-    timestamp: float = time.time()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert transaction to dictionary format."""
-        return {
-            'sender': self.sender,
-            'receiver': self.receiver,
-            'amount': self.amount,
-            'quantum_signature': self.quantum_signature.to_dict() if self.quantum_signature else None,
-            'timestamp': self.timestamp
-        }
-        
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Transaction':
-        """Create transaction from dictionary format."""
-        return cls(
-            sender=data['sender'],
-            receiver=data['receiver'],
-            amount=data['amount'],
-            quantum_signature=QuantumSignature.from_dict(data['quantum_signature']) 
-                if data['quantum_signature'] else None,
-            timestamp=data['timestamp']
-        )
-
-@dataclass
-class Block:
-    """Represents a block in the quantum-secured blockchain."""
-    index: int
-    transactions: List[Transaction]
-    timestamp: float
-    previous_hash: str
-    nonce: int = 0
-    hash: str = ""
-    quantum_state: Optional[np.ndarray] = None
-    
-    def calculate_hash(self) -> str:
-        """Calculate block hash including quantum state."""
-        block_string = json.dumps(self.to_dict(), sort_keys=True)
-        if self.quantum_state is not None:
-            # Include quantum state in hash calculation
-            quantum_string = np.array2string(self.quantum_state, precision=8)
-            block_string += quantum_string
-        return hashlib.sha256(block_string.encode()).hexdigest()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert block to dictionary format."""
-        return {
-            'index': self.index,
-            'transactions': [t.to_dict() for t in self.transactions],
-            'timestamp': self.timestamp,
-            'previous_hash': self.previous_hash,
-            'nonce': self.nonce,
-            'hash': self.hash,
-            'quantum_state': self.quantum_state.tolist() if self.quantum_state is not None else None
-        }
-        
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Block':
-        """Create block from dictionary format."""
-        return cls(
-            index=data['index'],
-            transactions=[Transaction.from_dict(t) for t in data['transactions']],
-            timestamp=data['timestamp'],
-            previous_hash=data['previous_hash'],
-            nonce=data['nonce'],
-            hash=data['hash'],
-            quantum_state=np.array(data['quantum_state']) if data['quantum_state'] else None
-        )
+from typing import List, Dict, Optional, Any, Tuple
+from datetime import datetime
+from .quantum_block import QuantumBlock
+from ..utils.cryptography import QuantumSignature, QuantumHash
+from ...quantum.core.quantum_register import QuantumRegister
+from ...quantum.utils.gates import QuantumGate, GateType
 
 class QuantumBlockchain:
     """
-    Quantum-secured blockchain implementation with hybrid classical-quantum security.
+    Quantum-enhanced blockchain implementation with advanced security
+    and consensus mechanisms.
     """
     
-    def __init__(self, difficulty: int = 4):
+    def __init__(
+        self,
+        n_qubits: int = 8,
+        difficulty: int = 4,
+        quantum_consensus: bool = True
+    ):
         """
         Initialize quantum blockchain.
         
         Args:
-            difficulty: Mining difficulty (number of leading zeros required)
+            n_qubits: Number of qubits for quantum operations
+            difficulty: Mining difficulty
+            quantum_consensus: Whether to use quantum consensus
         """
-        self.chain: List[Block] = []
-        self.pending_transactions: List[Transaction] = []
+        self.n_qubits = n_qubits
         self.difficulty = difficulty
-        self.quantum_consensus = QuantumConsensus()
+        self.quantum_consensus = quantum_consensus
+        
+        # Initialize components
+        self.chain: List[QuantumBlock] = []
+        self.pending_transactions: List[Dict] = []
+        self.quantum_register = QuantumRegister(n_qubits)
+        self.quantum_signature = QuantumSignature(n_qubits)
+        
+        # Generate blockchain keypair
+        self.private_key, self.public_key = self.quantum_signature.generate_keypair()
         
         # Create genesis block
         self.create_genesis_block()
         
     def create_genesis_block(self) -> None:
         """Create and add genesis block to chain."""
-        genesis_block = Block(
+        genesis_block = QuantumBlock(
             index=0,
-            transactions=[],
-            timestamp=time.time(),
-            previous_hash="0"
+            timestamp=datetime.now().timestamp(),
+            transactions=[{"data": "Genesis Block"}],
+            previous_hash="0" * 64,
+            n_qubits=self.n_qubits,
+            difficulty=self.difficulty
         )
-        genesis_block.hash = genesis_block.calculate_hash()
+        
+        # Mine and sign genesis block
+        genesis_block.mine_block()
+        genesis_block.sign_block(self.private_key)
+        
         self.chain.append(genesis_block)
         
-    def get_latest_block(self) -> Block:
-        """Get the most recent block in the chain."""
-        return self.chain[-1]
-        
-    def add_transaction(self, transaction: Transaction) -> bool:
+    def add_transaction(self, transaction: Dict) -> int:
         """
-        Add new transaction to pending transactions.
+        Add transaction to pending transactions.
         
         Args:
-            transaction: Transaction to add
+            transaction: Transaction data
             
         Returns:
-            bool: Success status
+            Index of next block to contain transaction
         """
-        if not transaction.quantum_signature:
-            # Generate quantum signature for transaction
-            transaction.quantum_signature = generate_quantum_signature(transaction.to_dict())
-            
-        if not self.verify_transaction(transaction):
-            return False
-            
         self.pending_transactions.append(transaction)
-        return True
+        return self.get_last_block().index + 1
         
-    def verify_transaction(self, transaction: Transaction) -> bool:
+    def mine_pending_transactions(self, miner_address: str) -> QuantumBlock:
         """
-        Verify transaction using quantum signature.
-        
-        Args:
-            transaction: Transaction to verify
-            
-        Returns:
-            bool: Verification status
-        """
-        if not transaction.quantum_signature:
-            return False
-            
-        # Verify quantum signature
-        transaction_data = transaction.to_dict()
-        transaction_data['quantum_signature'] = None  # Remove signature for verification
-        return transaction.quantum_signature.verify(transaction_data)
-        
-    def mine_pending_transactions(self, miner_address: str) -> Optional[Block]:
-        """
-        Mine pending transactions into new block.
+        Mine new block with pending transactions.
         
         Args:
             miner_address: Address to receive mining reward
             
         Returns:
-            Optional[Block]: Newly mined block if successful
+            Newly mined block
         """
-        if not self.pending_transactions:
-            return None
-            
-        # Create mining reward transaction
-        reward_transaction = Transaction(
-            sender="network",
-            receiver=miner_address,
-            amount=10.0  # Mining reward
-        )
-        self.pending_transactions.append(reward_transaction)
+        # Add mining reward transaction
+        self.pending_transactions.append({
+            "from": "network",
+            "to": miner_address,
+            "amount": self.get_mining_reward()
+        })
         
         # Create new block
-        block = Block(
+        block = QuantumBlock(
             index=len(self.chain),
+            timestamp=datetime.now().timestamp(),
             transactions=self.pending_transactions,
-            timestamp=time.time(),
-            previous_hash=self.get_latest_block().hash
+            previous_hash=self.get_last_block().hash,
+            n_qubits=self.n_qubits,
+            difficulty=self.difficulty
         )
         
-        # Perform proof of work
-        block = self.proof_of_work(block)
-        
-        # Add quantum state to block
-        block.quantum_state = self.quantum_consensus.generate_quantum_state(block)
+        # Mine and sign block
+        block.mine_block()
+        block.sign_block(self.private_key)
         
         # Add block to chain
-        if self.add_block(block):
-            self.pending_transactions = []
-            return block
-        return None
-        
-    def proof_of_work(self, block: Block) -> Block:
-        """
-        Perform proof of work to mine block.
-        
-        Args:
-            block: Block to mine
-            
-        Returns:
-            Block: Mined block
-        """
-        target = "0" * self.difficulty
-        
-        while True:
-            block.hash = block.calculate_hash()
-            if block.hash.startswith(target):
-                break
-            block.nonce += 1
-            
-        return block
-        
-    def add_block(self, block: Block) -> bool:
-        """
-        Add new block to chain after verification.
-        
-        Args:
-            block: Block to add
-            
-        Returns:
-            bool: Success status
-        """
-        if not self.verify_block(block):
-            return False
-            
-        # Verify quantum consensus
-        if not self.quantum_consensus.verify_block(block, self.chain):
-            return False
-            
         self.chain.append(block)
-        return True
         
-    def verify_block(self, block: Block) -> bool:
-        """
-        Verify block integrity.
+        # Clear pending transactions
+        self.pending_transactions = []
         
-        Args:
-            block: Block to verify
-            
-        Returns:
-            bool: Verification status
-        """
-        # Verify index
-        if block.index != len(self.chain):
-            return False
-            
-        # Verify previous hash
-        if block.previous_hash != self.get_latest_block().hash:
-            return False
-            
-        # Verify block hash
-        if block.hash != block.calculate_hash():
-            return False
-            
-        # Verify transactions
-        for transaction in block.transactions:
-            if not self.verify_transaction(transaction):
-                return False
-                
-        return True
+        return block
+    
+    def get_last_block(self) -> QuantumBlock:
+        """Get last block in chain."""
+        return self.chain[-1]
+    
+    def get_mining_reward(self) -> float:
+        """Calculate mining reward based on chain state."""
+        base_reward = 50.0
+        halving_interval = 210000
         
-    def verify_chain(self) -> bool:
+        # Halve reward every interval
+        halvings = len(self.chain) // halving_interval
+        return base_reward / (2 ** halvings)
+    
+    def is_chain_valid(self) -> bool:
         """
         Verify integrity of entire blockchain.
         
         Returns:
-            bool: Verification status
+            True if chain is valid
         """
         for i in range(1, len(self.chain)):
             current_block = self.chain[i]
@@ -280,51 +138,159 @@ class QuantumBlockchain:
             # Verify block hash
             if current_block.hash != current_block.calculate_hash():
                 return False
-                
-            # Verify chain continuity
+            
+            # Verify block link
             if current_block.previous_hash != previous_block.hash:
                 return False
-                
-            # Verify quantum states
-            if not self.quantum_consensus.verify_block(current_block, self.chain[:i]):
+            
+            # Verify quantum signature
+            if not current_block.verify_signature(self.public_key):
                 return False
-                
-        return True
+            
+            # Verify quantum state if consensus enabled
+            if self.quantum_consensus:
+                if not self._verify_quantum_state(current_block):
+                    return False
         
+        return True
+    
+    def _verify_quantum_state(self, block: QuantumBlock) -> bool:
+        """
+        Verify quantum state of block.
+        
+        Args:
+            block: Block to verify
+            
+        Returns:
+            True if quantum state is valid
+        """
+        if block.quantum_state is None:
+            return False
+            
+        # Reset quantum register
+        self.quantum_register.reset()
+        
+        # Recreate quantum state
+        try:
+            # Apply quantum operations based on block data
+            self._apply_quantum_consensus_circuit(block)
+            
+            # Compare states
+            current_state = self.quantum_register.get_state()
+            state_fidelity = np.abs(np.vdot(current_state, block.quantum_state))**2
+            
+            # Allow for some quantum noise
+            return state_fidelity > 0.95
+            
+        except Exception:
+            return False
+    
+    def _apply_quantum_consensus_circuit(self, block: QuantumBlock) -> None:
+        """Apply quantum circuit for consensus verification."""
+        # Create superposition
+        for qubit in range(self.n_qubits):
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.H),
+                [qubit]
+            )
+        
+        # Apply block-specific operations
+        block_data = str(block.to_dict()).encode()
+        for i, byte in enumerate(block_data[:self.n_qubits]):
+            angle = (byte / 255.0) * np.pi
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.Ry, {'theta': angle}),
+                [i % self.n_qubits]
+            )
+        
+        # Entangle qubits
+        for i in range(self.n_qubits - 1):
+            self.quantum_register.apply_gate(
+                QuantumGate(GateType.CNOT),
+                [i, i + 1]
+            )
+    
+    def replace_chain(self, new_chain: List[QuantumBlock]) -> bool:
+        """
+        Replace chain with new one if valid and longer.
+        
+        Args:
+            new_chain: New blockchain to validate
+            
+        Returns:
+            True if chain was replaced
+        """
+        # Create temporary blockchain for validation
+        temp_chain = self.chain.copy()
+        self.chain = new_chain
+        
+        # Verify new chain
+        if len(new_chain) <= len(temp_chain) or not self.is_chain_valid():
+            self.chain = temp_chain
+            return False
+            
+        return True
+    
     def get_balance(self, address: str) -> float:
         """
-        Calculate balance for given address.
+        Get balance for address.
         
         Args:
             address: Address to check
             
         Returns:
-            float: Current balance
+            Current balance
         """
         balance = 0.0
         
+        # Process all transactions in chain
         for block in self.chain:
             for transaction in block.transactions:
-                if transaction.sender == address:
-                    balance -= transaction.amount
-                if transaction.receiver == address:
-                    balance += transaction.amount
+                if transaction.get("from") == address:
+                    balance -= transaction.get("amount", 0)
+                if transaction.get("to") == address:
+                    balance += transaction.get("amount", 0)
                     
         return balance
-        
+    
     def to_dict(self) -> Dict[str, Any]:
-        """Convert blockchain to dictionary format."""
-        return {
-            'chain': [block.to_dict() for block in self.chain],
-            'pending_transactions': [t.to_dict() for t in self.pending_transactions],
-            'difficulty': self.difficulty
-        }
+        """
+        Convert blockchain to dictionary.
         
+        Returns:
+            Blockchain data as dictionary
+        """
+        return {
+            'n_qubits': self.n_qubits,
+            'difficulty': self.difficulty,
+            'quantum_consensus': self.quantum_consensus,
+            'public_key': self.public_key.tolist(),
+            'chain': [block.to_dict() for block in self.chain],
+            'pending_transactions': self.pending_transactions
+        }
+    
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'QuantumBlockchain':
-        """Create blockchain from dictionary format."""
-        blockchain = cls(difficulty=data['difficulty'])
-        blockchain.chain = [Block.from_dict(b) for b in data['chain']]
-        blockchain.pending_transactions = [Transaction.from_dict(t) 
-                                        for t in data['pending_transactions']]
+        """
+        Create blockchain from dictionary.
+        
+        Args:
+            data: Blockchain data dictionary
+            
+        Returns:
+            QuantumBlockchain instance
+        """
+        blockchain = cls(
+            n_qubits=data['n_qubits'],
+            difficulty=data['difficulty'],
+            quantum_consensus=data['quantum_consensus']
+        )
+        
+        blockchain.public_key = np.array(data['public_key'])
+        blockchain.chain = [
+            QuantumBlock.from_dict(block_data)
+            for block_data in data['chain']
+        ]
+        blockchain.pending_transactions = data['pending_transactions']
+        
         return blockchain
