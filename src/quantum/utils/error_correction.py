@@ -1,254 +1,232 @@
 import numpy as np
 from typing import Optional, Tuple
-from dataclasses import dataclass
+from scipy.linalg import expm
 
-@dataclass
-class ErrorSyndrome:
+class ErrorCorrector:
     """
-    Represents an error syndrome measurement result.
-    """
-    location: Tuple[int, int]  # (qubit_index, syndrome_type)
-    error_type: str  # "bit_flip", "phase_flip", or "both"
-    confidence: float  # Confidence level of the error detection
-
-class ErrorCorrectionProtocol:
-    """
-    Implementation of quantum error correction using the surface code.
+    Implementation of quantum error correction using the surface code
+    with real-time error detection and correction.
     """
     
-    def __init__(self, n_qubits: int, measurement_rounds: int = 3):
+    def __init__(self, error_threshold: float = 0.001):
         """
-        Initialize error correction protocol.
+        Initialize error corrector.
         
         Args:
-            n_qubits: Number of data qubits
-            measurement_rounds: Number of syndrome measurement rounds
+            error_threshold: Threshold for error detection
         """
-        self.n_qubits = n_qubits
-        self.measurement_rounds = measurement_rounds
-        self.syndrome_history = []
+        self.error_threshold = error_threshold
+        self.correction_history = []
         
-    def correct_state(self, quantum_state: np.ndarray) -> np.ndarray:
+    def needs_correction(self, state: np.ndarray) -> bool:
         """
-        Perform error correction on the quantum state.
+        Check if quantum state needs error correction.
         
         Args:
-            quantum_state: Current quantum state
+            state: Current quantum state vector
             
         Returns:
-            np.ndarray: Corrected quantum state
+            True if error correction is needed
         """
-        # Measure error syndromes
-        syndromes = self._measure_syndromes(quantum_state)
+        # Calculate state purity
+        density_matrix = np.outer(state, np.conj(state))
+        purity = np.real(np.trace(np.matmul(density_matrix, density_matrix)))
         
-        # Analyze error patterns
-        error_locations = self._analyze_error_patterns(syndromes)
-        
-        # Apply corrections
-        corrected_state = self._apply_corrections(quantum_state, error_locations)
-        
-        # Verify correction success
-        if not self._verify_correction(corrected_state):
-            raise RuntimeError("Error correction failed verification")
-            
-        return corrected_state
-        
-    def _measure_syndromes(self, state: np.ndarray) -> list[ErrorSyndrome]:
+        # Check if purity is below threshold
+        return purity < (1.0 - self.error_threshold)
+    
+    def correct(self, state: np.ndarray) -> np.ndarray:
         """
-        Perform syndrome measurements.
+        Apply error correction to quantum state.
         
         Args:
-            state: Current quantum state
+            state: Quantum state vector to correct
             
         Returns:
-            list[ErrorSyndrome]: Detected error syndromes
+            Corrected quantum state vector
         """
-        syndromes = []
+        # Detect error type and location
+        error_type, location = self._detect_error(state)
         
-        # Perform multiple rounds of syndrome measurements
-        for _ in range(self.measurement_rounds):
-            # Measure stabilizer operators
-            for i in range(self.n_qubits - 1):
-                # Measure X-type stabilizers
-                x_result = self._measure_x_stabilizer(state, i)
-                if x_result[1] > 0.5:  # Error detection threshold
-                    syndromes.append(ErrorSyndrome(
-                        location=(i, 0),
-                        error_type="bit_flip",
-                        confidence=x_result[1]
-                    ))
-                
-                # Measure Z-type stabilizers
-                z_result = self._measure_z_stabilizer(state, i)
-                if z_result[1] > 0.5:  # Error detection threshold
-                    syndromes.append(ErrorSyndrome(
-                        location=(i, 1),
-                        error_type="phase_flip",
-                        confidence=z_result[1]
-                    ))
-                    
-        self.syndrome_history.append(syndromes)
-        return syndromes
+        if error_type is not None:
+            # Apply appropriate correction
+            corrected_state = self._apply_correction(state, error_type, location)
+            
+            # Record correction
+            self.correction_history.append({
+                'error_type': error_type,
+                'location': location,
+                'time': np.datetime64('now')
+            })
+            
+            return corrected_state
         
-    def _analyze_error_patterns(self, syndromes: list[ErrorSyndrome]) -> list[Tuple[int, str]]:
+        return state
+    
+    def _detect_error(self, state: np.ndarray) -> Tuple[Optional[str], Optional[int]]:
         """
-        Analyze measured syndromes to identify error patterns.
+        Detect type and location of error in quantum state.
         
         Args:
-            syndromes: List of detected error syndromes
+            state: Quantum state vector to check
             
         Returns:
-            list[Tuple[int, str]]: List of (qubit_index, error_type) pairs
+            Tuple of (error_type, location) or (None, None) if no error detected
         """
-        error_locations = []
+        n_qubits = int(np.log2(len(state)))
         
-        # Group syndromes by location
-        location_groups = {}
-        for syndrome in syndromes:
-            if syndrome.location not in location_groups:
-                location_groups[syndrome.location] = []
-            location_groups[syndrome.location].append(syndrome)
-            
-        # Analyze each location for consistent error patterns
-        for location, group in location_groups.items():
-            if len(group) >= self.measurement_rounds // 2:
-                # Error is consistent across majority of rounds
-                qubit_index = location[0]
-                error_type = self._determine_error_type(group)
-                error_locations.append((qubit_index, error_type))
-                
-        return error_locations
-        
-    def _apply_corrections(self, state: np.ndarray, 
-                         error_locations: list[Tuple[int, str]]) -> np.ndarray:
-        """
-        Apply error corrections to the quantum state.
-        
-        Args:
-            state: Current quantum state
-            error_locations: List of detected errors
-            
-        Returns:
-            np.ndarray: Corrected quantum state
-        """
-        corrected_state = state.copy()
-        
-        for qubit_index, error_type in error_locations:
-            if error_type == "bit_flip":
-                corrected_state = self._apply_x_correction(corrected_state, qubit_index)
-            elif error_type == "phase_flip":
-                corrected_state = self._apply_z_correction(corrected_state, qubit_index)
-            elif error_type == "both":
-                corrected_state = self._apply_x_correction(corrected_state, qubit_index)
-                corrected_state = self._apply_z_correction(corrected_state, qubit_index)
-                
-        return corrected_state
-        
-    def _verify_correction(self, state: np.ndarray) -> bool:
-        """
-        Verify that error correction was successful.
-        
-        Args:
-            state: Corrected quantum state
-            
-        Returns:
-            bool: True if correction was successful
-        """
-        # Measure stabilizers again
+        # Calculate syndrome measurements
         syndromes = self._measure_syndromes(state)
         
-        # Check if any errors remain
-        return len(syndromes) == 0
+        # Analyze syndromes to detect errors
+        for i in range(n_qubits):
+            # Check for bit flip errors
+            if self._check_bit_flip_syndrome(syndromes, i):
+                return 'bit_flip', i
+                
+            # Check for phase flip errors
+            if self._check_phase_flip_syndrome(syndromes, i):
+                return 'phase_flip', i
+                
+            # Check for combined errors
+            if self._check_combined_syndrome(syndromes, i):
+                return 'combined', i
         
-    def _measure_x_stabilizer(self, state: np.ndarray, index: int) -> Tuple[bool, float]:
+        return None, None
+    
+    def _measure_syndromes(self, state: np.ndarray) -> np.ndarray:
         """
-        Measure X-type stabilizer at given index.
+        Perform syndrome measurements for error detection.
         
         Args:
-            state: Quantum state
-            index: Stabilizer index
+            state: Quantum state vector
             
         Returns:
-            Tuple[bool, float]: (measurement_result, confidence)
+            Array of syndrome measurement results
         """
-        # Implement X-type stabilizer measurement
-        # This is a simplified version - real implementation would be more complex
-        projection = np.eye(len(state), dtype=complex)
-        projection[index:index+2, index:index+2] = np.array([[0, 1], [1, 0]])
+        n_qubits = int(np.log2(len(state)))
+        syndromes = np.zeros(4 * n_qubits, dtype=np.complex128)
         
-        result = np.real(np.trace(np.dot(projection, state)))
-        confidence = abs(result - 0.5) * 2  # Scale to [0, 1]
+        for i in range(n_qubits):
+            # X-type stabilizer measurements
+            syndromes[4*i] = self._measure_x_stabilizer(state, i)
+            
+            # Z-type stabilizer measurements
+            syndromes[4*i + 1] = self._measure_z_stabilizer(state, i)
+            
+            # Y-type stabilizer measurements
+            syndromes[4*i + 2] = self._measure_y_stabilizer(state, i)
+            
+            # Combined stabilizer measurements
+            syndromes[4*i + 3] = self._measure_combined_stabilizer(state, i)
         
-        return bool(result > 0.5), confidence
+        return syndromes
+    
+    def _measure_x_stabilizer(self, state: np.ndarray, qubit: int) -> complex:
+        """Measure X-type stabilizer."""
+        n_qubits = int(np.log2(len(state)))
         
-    def _measure_z_stabilizer(self, state: np.ndarray, index: int) -> Tuple[bool, float]:
+        # Build X stabilizer operator
+        x_matrix = np.array([[0, 1], [1, 0]], dtype=np.complex128)
+        stabilizer = self._build_operator(x_matrix, n_qubits, qubit)
+        
+        return np.vdot(state, np.dot(stabilizer, state))
+    
+    def _measure_z_stabilizer(self, state: np.ndarray, qubit: int) -> complex:
+        """Measure Z-type stabilizer."""
+        n_qubits = int(np.log2(len(state)))
+        
+        # Build Z stabilizer operator
+        z_matrix = np.array([[1, 0], [0, -1]], dtype=np.complex128)
+        stabilizer = self._build_operator(z_matrix, n_qubits, qubit)
+        
+        return np.vdot(state, np.dot(stabilizer, state))
+    
+    def _measure_y_stabilizer(self, state: np.ndarray, qubit: int) -> complex:
+        """Measure Y-type stabilizer."""
+        n_qubits = int(np.log2(len(state)))
+        
+        # Build Y stabilizer operator
+        y_matrix = np.array([[0, -1j], [1j, 0]], dtype=np.complex128)
+        stabilizer = self._build_operator(y_matrix, n_qubits, qubit)
+        
+        return np.vdot(state, np.dot(stabilizer, state))
+    
+    def _measure_combined_stabilizer(self, state: np.ndarray, qubit: int) -> complex:
+        """Measure combined stabilizer."""
+        n_qubits = int(np.log2(len(state)))
+        
+        # Build combined stabilizer operator
+        x_matrix = np.array([[0, 1], [1, 0]], dtype=np.complex128)
+        z_matrix = np.array([[1, 0], [0, -1]], dtype=np.complex128)
+        combined = np.dot(x_matrix, z_matrix)
+        stabilizer = self._build_operator(combined, n_qubits, qubit)
+        
+        return np.vdot(state, np.dot(stabilizer, state))
+    
+    def _build_operator(self, op_matrix: np.ndarray, n_qubits: int, target: int) -> np.ndarray:
+        """Build full operator matrix for n-qubit system."""
+        # Identity matrices for other qubits
+        id_before = np.eye(2**target, dtype=np.complex128)
+        id_after = np.eye(2**(n_qubits-target-1), dtype=np.complex128)
+        
+        # Kronecker product to build full operator
+        return np.kron(np.kron(id_before, op_matrix), id_after)
+    
+    def _check_bit_flip_syndrome(self, syndromes: np.ndarray, qubit: int) -> bool:
+        """Check for bit flip error on specified qubit."""
+        return abs(1 - abs(syndromes[4*qubit])) > self.error_threshold
+    
+    def _check_phase_flip_syndrome(self, syndromes: np.ndarray, qubit: int) -> bool:
+        """Check for phase flip error on specified qubit."""
+        return abs(1 - abs(syndromes[4*qubit + 1])) > self.error_threshold
+    
+    def _check_combined_syndrome(self, syndromes: np.ndarray, qubit: int) -> bool:
+        """Check for combined error on specified qubit."""
+        return (abs(1 - abs(syndromes[4*qubit + 2])) > self.error_threshold or
+                abs(1 - abs(syndromes[4*qubit + 3])) > self.error_threshold)
+    
+    def _apply_correction(self, state: np.ndarray, error_type: str, location: int) -> np.ndarray:
         """
-        Measure Z-type stabilizer at given index.
+        Apply error correction operation.
         
         Args:
-            state: Quantum state
-            index: Stabilizer index
+            state: Quantum state vector to correct
+            error_type: Type of error detected
+            location: Qubit location of error
             
         Returns:
-            Tuple[bool, float]: (measurement_result, confidence)
+            Corrected quantum state
         """
-        # Implement Z-type stabilizer measurement
-        projection = np.eye(len(state), dtype=complex)
-        projection[index:index+2, index:index+2] = np.array([[1, 0], [0, -1]])
+        n_qubits = int(np.log2(len(state)))
         
-        result = np.real(np.trace(np.dot(projection, state)))
-        confidence = abs(result - 0.5) * 2  # Scale to [0, 1]
-        
-        return bool(result > 0.5), confidence
-        
-    def _apply_x_correction(self, state: np.ndarray, index: int) -> np.ndarray:
-        """
-        Apply X (bit-flip) correction to specified qubit.
-        
-        Args:
-            state: Quantum state
-            index: Qubit index
+        if error_type == 'bit_flip':
+            # Apply X gate to correct bit flip
+            correction = self._build_operator(
+                np.array([[0, 1], [1, 0]], dtype=np.complex128),
+                n_qubits,
+                location
+            )
             
-        Returns:
-            np.ndarray: Corrected state
-        """
-        correction = np.eye(len(state), dtype=complex)
-        correction[index:index+2, index:index+2] = np.array([[0, 1], [1, 0]])
-        return np.dot(correction, state)
-        
-    def _apply_z_correction(self, state: np.ndarray, index: int) -> np.ndarray:
-        """
-        Apply Z (phase-flip) correction to specified qubit.
-        
-        Args:
-            state: Quantum state
-            index: Qubit index
+        elif error_type == 'phase_flip':
+            # Apply Z gate to correct phase flip
+            correction = self._build_operator(
+                np.array([[1, 0], [0, -1]], dtype=np.complex128),
+                n_qubits,
+                location
+            )
             
-        Returns:
-            np.ndarray: Corrected state
-        """
-        correction = np.eye(len(state), dtype=complex)
-        correction[index:index+2, index:index+2] = np.array([[1, 0], [0, -1]])
-        return np.dot(correction, state)
+        else:  # combined error
+            # Apply Y gate to correct combined error
+            correction = self._build_operator(
+                np.array([[0, -1j], [1j, 0]], dtype=np.complex128),
+                n_qubits,
+                location
+            )
         
-    @staticmethod
-    def _determine_error_type(syndromes: list[ErrorSyndrome]) -> str:
-        """
-        Determine the type of error from a group of syndromes.
+        # Apply correction operation
+        corrected_state = np.dot(correction, state)
         
-        Args:
-            syndromes: List of error syndromes at same location
-            
-        Returns:
-            str: Determined error type
-        """
-        error_types = [s.error_type for s in syndromes]
-        if "both" in error_types:
-            return "both"
-        if "bit_flip" in error_types and "phase_flip" in error_types:
-            return "both"
-        if "bit_flip" in error_types:
-            return "bit_flip"
-        if "phase_flip" in error_types:
-            return "phase_flip"
-        return "bit_flip"  # Default to bit-flip if uncertain
+        # Normalize state
+        norm = np.sqrt(np.sum(np.abs(corrected_state)**2))
+        return corrected_state / norm

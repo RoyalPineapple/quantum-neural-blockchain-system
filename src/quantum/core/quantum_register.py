@@ -1,12 +1,12 @@
 import numpy as np
-from typing import List, Optional, Tuple
-from ..utils.error_correction import ErrorCorrectionProtocol
+from typing import List, Optional, Tuple, Dict
+from ..utils.error_correction import ErrorCorrector
 from ..utils.gates import QuantumGate
 
 class QuantumRegister:
     """
-    Core quantum register implementation supporting arbitrary number of qubits
-    with built-in error correction and gate operations.
+    A quantum register implementation supporting large-scale quantum computation
+    with error correction and efficient state management.
     """
     
     def __init__(self, n_qubits: int, error_threshold: float = 0.001):
@@ -15,135 +15,132 @@ class QuantumRegister:
         
         Args:
             n_qubits: Number of qubits in the register
-            error_threshold: Maximum allowed error rate before correction
+            error_threshold: Threshold for error correction
         """
+        if not 1 <= n_qubits <= 1024:
+            raise ValueError("Number of qubits must be between 1 and 1024")
+            
         self.n_qubits = n_qubits
         self.error_threshold = error_threshold
-        self.quantum_states = np.zeros((2**n_qubits, 2**n_qubits), dtype=complex)
-        self.error_correction = ErrorCorrectionProtocol(n_qubits)
-        self.gate_history: List[Tuple[QuantumGate, int]] = []
         
-    def apply_gate(self, gate: QuantumGate, target_qubit: int) -> bool:
+        # Initialize quantum state to |0>^⊗n
+        self.state = np.zeros(2**n_qubits, dtype=np.complex128)
+        self.state[0] = 1.0
+        
+        # Initialize error corrector
+        self.error_corrector = ErrorCorrector(error_threshold)
+        
+        # Track gate history for optimization
+        self.gate_history: List[Tuple[QuantumGate, List[int]]] = []
+        
+        # Measurement results cache
+        self.measurements: Dict[int, int] = {}
+        
+    def apply_gate(self, gate: QuantumGate, qubits: List[int]) -> None:
         """
-        Apply a quantum gate operation to the specified target qubit.
+        Apply a quantum gate to specified qubits.
         
         Args:
             gate: Quantum gate to apply
-            target_qubit: Index of target qubit
-            
-        Returns:
-            bool: Success status of operation
+            qubits: List of qubit indices to apply gate to
         """
-        if target_qubit >= self.n_qubits:
-            raise ValueError(f"Target qubit {target_qubit} exceeds register size {self.n_qubits}")
+        # Validate qubit indices
+        if not all(0 <= q < self.n_qubits for q in qubits):
+            raise ValueError("Invalid qubit indices")
             
-        try:
-            initial_state = self.quantum_states.copy()
-            gate_matrix = gate.get_matrix()
-            
-            # Apply gate transformation
-            self._apply_transformation(gate_matrix, target_qubit)
-            
-            # Perform error correction if needed
-            if self._error_rate() > self.error_threshold:
-                self.quantum_states = self.error_correction.correct_state(self.quantum_states)
-                
-            # Record gate application
-            self.gate_history.append((gate, target_qubit))
-            return True
-            
-        except Exception as e:
-            self.quantum_states = initial_state  # Rollback on error
-            raise RuntimeError(f"Gate application failed: {str(e)}")
-            
-    def measure(self, qubit: Optional[int] = None) -> np.ndarray:
+        # Apply gate operation
+        self.state = gate.apply(self.state, qubits)
+        
+        # Record gate application
+        self.gate_history.append((gate, qubits))
+        
+        # Perform error correction if needed
+        if self.error_corrector.needs_correction(self.state):
+            self.state = self.error_corrector.correct(self.state)
+    
+    def measure(self, qubits: Optional[List[int]] = None) -> Dict[int, int]:
         """
-        Perform a measurement on the specified qubit or entire register.
+        Measure specified qubits or all qubits if none specified.
         
         Args:
-            qubit: Optional specific qubit to measure, or None for full register
+            qubits: Optional list of qubit indices to measure
             
         Returns:
-            np.ndarray: Measurement results
+            Dictionary mapping qubit indices to measured values (0 or 1)
         """
-        if qubit is not None:
-            if qubit >= self.n_qubits:
-                raise ValueError(f"Qubit index {qubit} exceeds register size {self.n_qubits}")
-            return self._measure_single_qubit(qubit)
-        return self._measure_register()
+        qubits = qubits or list(range(self.n_qubits))
         
-    def _apply_transformation(self, gate_matrix: np.ndarray, target: int) -> None:
+        # Validate qubit indices
+        if not all(0 <= q < self.n_qubits for q in qubits):
+            raise ValueError("Invalid qubit indices")
+            
+        results = {}
+        for qubit in qubits:
+            # Calculate probability of measuring |1>
+            prob_one = self._calculate_measurement_probability(qubit)
+            
+            # Perform measurement
+            result = 1 if np.random.random() < prob_one else 0
+            
+            # Update state vector to reflect measurement
+            self._collapse_state(qubit, result)
+            
+            # Store result
+            results[qubit] = result
+            self.measurements[qubit] = result
+            
+        return results
+    
+    def get_state(self) -> np.ndarray:
         """
-        Apply a gate transformation matrix to the target qubit.
-        
-        Args:
-            gate_matrix: The quantum gate matrix to apply
-            target: Target qubit index
-        """
-        # Calculate the full transformation matrix
-        full_transform = np.eye(2**self.n_qubits, dtype=complex)
-        
-        # Apply the gate matrix to the target qubit
-        for i in range(2**self.n_qubits):
-            if (i >> target) & 1:
-                # Apply transformation for |1⟩ state
-                full_transform[i, i] = gate_matrix[1, 1]
-            else:
-                # Apply transformation for |0⟩ state
-                full_transform[i, i] = gate_matrix[0, 0]
-                
-        # Update quantum states
-        self.quantum_states = np.dot(full_transform, self.quantum_states)
-        
-    def _error_rate(self) -> float:
-        """
-        Calculate the current error rate in the quantum register.
+        Get the current quantum state vector.
         
         Returns:
-            float: Estimated error rate
+            Complex numpy array representing quantum state
         """
-        # Implement error rate calculation based on state fidelity
-        trace = np.trace(np.abs(self.quantum_states))
-        return 1 - (trace / (2**self.n_qubits))
-        
-    def _measure_single_qubit(self, qubit: int) -> np.ndarray:
+        return self.state.copy()
+    
+    def reset(self) -> None:
+        """Reset the quantum register to initial state |0>^⊗n."""
+        self.state = np.zeros(2**self.n_qubits, dtype=np.complex128)
+        self.state[0] = 1.0
+        self.gate_history.clear()
+        self.measurements.clear()
+    
+    def _calculate_measurement_probability(self, qubit: int) -> float:
         """
-        Perform measurement on a single qubit.
+        Calculate probability of measuring |1> for given qubit.
         
         Args:
             qubit: Index of qubit to measure
             
         Returns:
-            np.ndarray: Measurement result
+            Probability of measuring |1>
         """
-        # Project state onto computational basis
-        projection = np.zeros((2**self.n_qubits, 2**self.n_qubits), dtype=complex)
+        # Create projection operator for |1> state
+        proj_one = np.zeros((2**self.n_qubits, 2**self.n_qubits))
         for i in range(2**self.n_qubits):
             if (i >> qubit) & 1:
-                projection[i, i] = 1
+                proj_one[i, i] = 1
                 
-        # Calculate probability of |1⟩ state
-        prob_one = np.real(np.trace(np.dot(projection, self.quantum_states)))
-        
-        # Collapse state based on measurement
-        if np.random.random() < prob_one:
-            result = 1
-            self.quantum_states = np.dot(projection, self.quantum_states) / np.sqrt(prob_one)
-        else:
-            result = 0
-            self.quantum_states = np.dot((np.eye(2**self.n_qubits) - projection), 
-                                       self.quantum_states) / np.sqrt(1 - prob_one)
-                                       
-        return np.array([result])
-        
-    def _measure_register(self) -> np.ndarray:
+        # Calculate probability
+        return float(np.real(np.dot(np.conj(self.state), np.dot(proj_one, self.state))))
+    
+    def _collapse_state(self, qubit: int, result: int) -> None:
         """
-        Perform measurement on entire quantum register.
+        Collapse quantum state after measurement.
         
-        Returns:
-            np.ndarray: Measurement results for all qubits
+        Args:
+            qubit: Index of measured qubit
+            result: Measurement result (0 or 1)
         """
-        results = np.zeros(self.n_qubits, dtype=int)
-        for i in range(self.n_qubits):
-            results[i] = self._measure_single_qubit(i)[0]
-        return results
+        # Create projection operator
+        proj = np.zeros((2**self.n_qubits, 2**self.n_qubits))
+        for i in range(2**self.n_qubits):
+            if ((i >> qubit) & 1) == result:
+                proj[i, i] = 1
+                
+        # Project state and normalize
+        self.state = np.dot(proj, self.state)
+        norm = np.sqrt(np.sum(np.abs(self.state)**2))
+        self.state /= norm
