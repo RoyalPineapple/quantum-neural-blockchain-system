@@ -1,434 +1,424 @@
-import torch
-import torch.nn as nn
+from typing import List, Dict, Any, Optional
 import numpy as np
-from typing import Dict, Any, List, Optional, Tuple
-from dataclasses import dataclass
-
 from ...quantum.core.quantum_register import QuantumRegister
-from ...neural.core.quantum_neural_layer import QuantumNeuralLayer, QuantumNeuralConfig
-from ..circuits.optimization_circuits import QuantumOptimizationCircuit
-from ..utils.parameter_optimization import ParameterOptimizer
+from ...quantum.utils.gates import QuantumGate
 
-@dataclass
-class CircuitOptimizationConfig:
-    """Configuration for Quantum Circuit Optimizer."""
-    n_qubits: int
-    n_layers: int
-    optimization_steps: int
-    learning_rate: float
-    convergence_threshold: float
-    max_depth: int
-    error_threshold: float
-    optimization_strategy: str  # 'gradient', 'evolutionary', 'quantum'
-
-class QuantumCircuitOptimizer:
+class CircuitOptimizer:
     """
-    Quantum circuit optimization system for improving quantum algorithm performance.
+    Advanced quantum circuit optimizer that uses multiple optimization strategies
+    to improve circuit efficiency and reduce quantum noise.
     """
     
-    def __init__(self, config: CircuitOptimizationConfig):
+    def __init__(
+        self,
+        optimization_level: int = 3,
+        noise_aware: bool = True,
+        max_depth: Optional[int] = None,
+        gate_cost_weights: Optional[Dict[str, float]] = None
+    ):
         """
-        Initialize quantum circuit optimizer.
+        Initialize circuit optimizer.
         
         Args:
-            config: Optimization configuration
+            optimization_level: Level of optimization (1-3)
+            noise_aware: Whether to consider quantum noise in optimization
+            max_depth: Maximum allowed circuit depth (None for no limit)
+            gate_cost_weights: Custom weights for gate costs
         """
-        self.config = config
+        self.optimization_level = optimization_level
+        self.noise_aware = noise_aware
+        self.max_depth = max_depth
+        self.gate_cost_weights = gate_cost_weights or {
+            "hadamard": 1.0,
+            "cnot": 2.0,
+            "rx": 1.5,
+            "ry": 1.5,
+            "rz": 1.0,
+            "swap": 3.0,
+            "toffoli": 5.0
+        }
         
-        # Initialize quantum components
-        self.quantum_register = QuantumRegister(config.n_qubits)
+        # Initialize optimization strategies
+        self.strategies = [
+            self._merge_adjacent_gates,
+            self._eliminate_redundant_gates,
+            self._optimize_gate_order,
+            self._decompose_complex_gates,
+            self._balance_circuit_depth
+        ]
         
-        # Initialize optimization circuit
-        self.optimization_circuit = QuantumOptimizationCircuit(
-            n_qubits=config.n_qubits,
-            n_layers=config.n_layers
-        )
-        
-        # Initialize parameter optimizer
-        self.parameter_optimizer = ParameterOptimizer(
-            n_parameters=self.optimization_circuit.n_parameters,
-            learning_rate=config.learning_rate,
-            optimization_strategy=config.optimization_strategy
-        )
-        
-        # Quantum neural network for optimization
-        self.quantum_neural = QuantumNeuralLayer(
-            QuantumNeuralConfig(
-                n_qubits=config.n_qubits,
-                n_quantum_layers=config.n_layers,
-                n_classical_layers=2,
-                learning_rate=config.learning_rate,
-                quantum_circuit_depth=config.max_depth
-            )
-        )
-        
-        # Optimization history
-        self.optimization_history = []
-        
-    def optimize_circuit(self, target_unitary: np.ndarray,
-                        initial_parameters: Optional[np.ndarray] = None) -> Dict[str, Any]:
+        if optimization_level >= 2:
+            self.strategies.extend([
+                self._commute_gates,
+                self._template_matching,
+                self._quantum_shannon_decomposition
+            ])
+            
+        if optimization_level >= 3:
+            self.strategies.extend([
+                self._quantum_machine_learning_optimization,
+                self._noise_adaptive_mapping,
+                self._quantum_error_mitigation
+            ])
+            
+    def optimize(self, quantum_component: Any) -> Any:
         """
-        Optimize quantum circuit to implement target unitary operation.
+        Optimize a quantum component's circuits.
         
         Args:
-            target_unitary: Target unitary operation
-            initial_parameters: Optional initial parameters
+            quantum_component: Component containing quantum circuits
             
         Returns:
-            Dict[str, Any]: Optimization results
+            Optimized quantum component
         """
-        # Initialize parameters if not provided
-        if initial_parameters is None:
-            initial_parameters = np.random.randn(self.optimization_circuit.n_parameters)
-            
-        # Initialize optimization state
-        current_parameters = initial_parameters
-        best_parameters = initial_parameters
-        best_fidelity = 0.0
+        # Extract quantum circuits
+        circuits = self._extract_circuits(quantum_component)
         
-        # Optimization loop
-        for step in range(self.config.optimization_steps):
-            # Evaluate current circuit
-            current_unitary = self._evaluate_circuit(current_parameters)
-            current_fidelity = self._calculate_fidelity(current_unitary, target_unitary)
+        # Apply optimization strategies
+        for strategy in self.strategies:
+            circuits = strategy(circuits)
             
-            # Update best solution
-            if current_fidelity > best_fidelity:
-                best_fidelity = current_fidelity
-                best_parameters = current_parameters.copy()
-                
-            # Check convergence
-            if best_fidelity > 1 - self.config.convergence_threshold:
-                break
-                
-            # Update parameters
-            gradient = self._calculate_gradient(current_parameters, target_unitary)
-            current_parameters = self.parameter_optimizer.update(
-                current_parameters,
-                gradient
-            )
-            
-            # Record optimization step
-            self._record_optimization_step(step, current_fidelity, current_parameters)
-            
-        # Generate final results
-        optimized_circuit = self._generate_optimized_circuit(best_parameters)
+        # Validate optimized circuits
+        self._validate_circuits(circuits)
         
+        # Update component with optimized circuits
+        return self._update_component(quantum_component, circuits)
+        
+    def _extract_circuits(self, component: Any) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Extract quantum circuits from component."""
+        circuits = []
+        
+        # Handle different component types
+        if hasattr(component, "quantum_register"):
+            circuits.append(component.quantum_register.gate_history)
+        elif hasattr(component, "layers"):
+            for layer in component.layers:
+                if hasattr(layer, "quantum_register"):
+                    circuits.append(layer.quantum_register.gate_history)
+                    
+        return circuits
+        
+    def _merge_adjacent_gates(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Merge adjacent compatible gates."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            optimized_circuit = []
+            i = 0
+            while i < len(circuit):
+                if i + 1 < len(circuit):
+                    gate1, qubits1 = circuit[i]
+                    gate2, qubits2 = circuit[i + 1]
+                    
+                    # Check if gates can be merged
+                    if (self._are_gates_compatible(gate1, gate2) and
+                        qubits1 == qubits2):
+                        # Merge gates
+                        merged_gate = self._merge_gates(gate1, gate2)
+                        optimized_circuit.append((merged_gate, qubits1))
+                        i += 2
+                    else:
+                        optimized_circuit.append(circuit[i])
+                        i += 1
+                else:
+                    optimized_circuit.append(circuit[i])
+                    i += 1
+                    
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _eliminate_redundant_gates(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Eliminate redundant gates that cancel each other."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            optimized_circuit = []
+            skip_next = False
+            
+            for i in range(len(circuit)):
+                if skip_next:
+                    skip_next = False
+                    continue
+                    
+                if i + 1 < len(circuit):
+                    gate1, qubits1 = circuit[i]
+                    gate2, qubits2 = circuit[i + 1]
+                    
+                    # Check if gates cancel each other
+                    if (self._are_gates_inverse(gate1, gate2) and
+                        qubits1 == qubits2):
+                        skip_next = True
+                        continue
+                        
+                optimized_circuit.append(circuit[i])
+                
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _optimize_gate_order(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Optimize gate order for better parallelization."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            # Group gates by qubit dependencies
+            gate_groups = self._group_gates_by_qubits(circuit)
+            
+            # Reorder gates within groups for optimal execution
+            optimized_circuit = []
+            for group in gate_groups:
+                ordered_gates = self._order_gates_optimally(group)
+                optimized_circuit.extend(ordered_gates)
+                
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _decompose_complex_gates(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Decompose complex gates into simpler ones."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            optimized_circuit = []
+            
+            for gate, qubits in circuit:
+                if gate.is_complex():
+                    # Decompose complex gate
+                    decomposed_gates = self._decompose_gate(gate, qubits)
+                    optimized_circuit.extend(decomposed_gates)
+                else:
+                    optimized_circuit.append((gate, qubits))
+                    
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _balance_circuit_depth(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Balance circuit depth while maintaining functionality."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            if self.max_depth and self._get_circuit_depth(circuit) > self.max_depth:
+                # Rebalance circuit to reduce depth
+                balanced_circuit = self._rebalance_circuit(circuit)
+                optimized_circuits.append(balanced_circuit)
+            else:
+                optimized_circuits.append(circuit)
+                
+        return optimized_circuits
+        
+    def _commute_gates(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Optimize using gate commutation relations."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            optimized_circuit = []
+            i = 0
+            
+            while i < len(circuit):
+                if i + 1 < len(circuit):
+                    gate1, qubits1 = circuit[i]
+                    gate2, qubits2 = circuit[i + 1]
+                    
+                    # Check if gates commute and if commuting improves efficiency
+                    if (self._do_gates_commute(gate1, gate2) and
+                        self._is_commutation_beneficial(gate1, gate2, qubits1, qubits2)):
+                        # Swap gates
+                        optimized_circuit.append((gate2, qubits2))
+                        optimized_circuit.append((gate1, qubits1))
+                        i += 2
+                    else:
+                        optimized_circuit.append(circuit[i])
+                        i += 1
+                else:
+                    optimized_circuit.append(circuit[i])
+                    i += 1
+                    
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _template_matching(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Optimize using predefined gate sequence templates."""
+        optimized_circuits = []
+        
+        # Load gate sequence templates
+        templates = self._load_gate_templates()
+        
+        for circuit in circuits:
+            optimized_circuit = []
+            i = 0
+            
+            while i < len(circuit):
+                # Try to match templates
+                matched = False
+                for template in templates:
+                    if i + len(template["sequence"]) <= len(circuit):
+                        if self._matches_template(
+                            circuit[i:i + len(template["sequence"])],
+                            template["sequence"]
+                        ):
+                            # Replace with optimized sequence
+                            optimized_circuit.extend(template["optimized"])
+                            i += len(template["sequence"])
+                            matched = True
+                            break
+                            
+                if not matched:
+                    optimized_circuit.append(circuit[i])
+                    i += 1
+                    
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _quantum_shannon_decomposition(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Apply Quantum Shannon Decomposition for optimal synthesis."""
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            # Convert circuit to unitary matrix
+            unitary = self._circuit_to_unitary(circuit)
+            
+            # Apply QSD
+            decomposed_circuit = self._quantum_shannon_decompose(unitary)
+            
+            optimized_circuits.append(decomposed_circuit)
+            
+        return optimized_circuits
+        
+    def _quantum_machine_learning_optimization(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Use quantum machine learning for circuit optimization."""
+        if not hasattr(self, "qml_optimizer"):
+            self._initialize_qml_optimizer()
+            
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            # Convert circuit to feature vector
+            features = self._circuit_to_features(circuit)
+            
+            # Get optimization suggestions
+            optimized_sequence = self.qml_optimizer.optimize(features)
+            
+            # Convert back to circuit
+            optimized_circuit = self._sequence_to_circuit(optimized_sequence)
+            optimized_circuits.append(optimized_circuit)
+            
+        return optimized_circuits
+        
+    def _noise_adaptive_mapping(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Adapt circuit to hardware noise characteristics."""
+        if not self.noise_aware:
+            return circuits
+            
+        optimized_circuits = []
+        
+        # Load noise model
+        noise_model = self._load_noise_model()
+        
+        for circuit in circuits:
+            # Map circuit to minimize noise impact
+            mapped_circuit = self._map_to_hardware(circuit, noise_model)
+            optimized_circuits.append(mapped_circuit)
+            
+        return optimized_circuits
+        
+    def _quantum_error_mitigation(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> List[List[Tuple[QuantumGate, List[int]]]]:
+        """Apply quantum error mitigation techniques."""
+        if not self.noise_aware:
+            return circuits
+            
+        optimized_circuits = []
+        
+        for circuit in circuits:
+            # Add error detection
+            circuit_with_detection = self._add_error_detection(circuit)
+            
+            # Add recovery operations
+            circuit_with_recovery = self._add_recovery_operations(circuit_with_detection)
+            
+            optimized_circuits.append(circuit_with_recovery)
+            
+        return optimized_circuits
+        
+    def _validate_circuits(
+        self,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> None:
+        """Validate optimized circuits."""
+        for circuit in circuits:
+            # Check circuit depth
+            if self.max_depth and self._get_circuit_depth(circuit) > self.max_depth:
+                raise ValueError("Circuit depth exceeds maximum allowed depth")
+                
+            # Verify gate compatibility
+            self._verify_gate_compatibility(circuit)
+            
+            # Check qubit constraints
+            self._verify_qubit_constraints(circuit)
+            
+    def _update_component(
+        self,
+        component: Any,
+        circuits: List[List[Tuple[QuantumGate, List[int]]]]
+    ) -> Any:
+        """Update component with optimized circuits."""
+        circuit_idx = 0
+        
+        # Update quantum registers in component
+        if hasattr(component, "quantum_register"):
+            component.quantum_register.gate_history = circuits[circuit_idx]
+            circuit_idx += 1
+            
+        if hasattr(component, "layers"):
+            for layer in component.layers:
+                if hasattr(layer, "quantum_register"):
+                    layer.quantum_register.gate_history = circuits[circuit_idx]
+                    circuit_idx += 1
+                    
+        return component
+        
+    def get_optimization_stats(self) -> Dict[str, Any]:
+        """Get optimization statistics."""
         return {
-            'optimized_parameters': best_parameters,
-            'final_fidelity': best_fidelity,
-            'optimization_steps': step + 1,
-            'optimization_history': self.optimization_history,
-            'optimized_circuit': optimized_circuit
+            "optimization_level": self.optimization_level,
+            "noise_aware": self.noise_aware,
+            "max_depth": self.max_depth,
+            "gate_costs": self.gate_cost_weights,
+            "strategies_used": [s.__name__ for s in self.strategies]
         }
-        
-    def optimize_ansatz(self, cost_function: callable,
-                       initial_parameters: Optional[np.ndarray] = None) -> Dict[str, Any]:
-        """
-        Optimize quantum circuit ansatz for given cost function.
-        
-        Args:
-            cost_function: Cost function to optimize
-            initial_parameters: Optional initial parameters
-            
-        Returns:
-            Dict[str, Any]: Optimization results
-        """
-        # Initialize parameters if not provided
-        if initial_parameters is None:
-            initial_parameters = np.random.randn(self.optimization_circuit.n_parameters)
-            
-        # Initialize optimization state
-        current_parameters = initial_parameters
-        best_parameters = initial_parameters
-        best_cost = float('inf')
-        
-        # Optimization loop
-        for step in range(self.config.optimization_steps):
-            # Evaluate current ansatz
-            current_state = self._evaluate_ansatz(current_parameters)
-            current_cost = cost_function(current_state)
-            
-            # Update best solution
-            if current_cost < best_cost:
-                best_cost = current_cost
-                best_parameters = current_parameters.copy()
-                
-            # Check convergence
-            if current_cost < self.config.convergence_threshold:
-                break
-                
-            # Update parameters
-            gradient = self._calculate_ansatz_gradient(
-                current_parameters,
-                cost_function
-            )
-            current_parameters = self.parameter_optimizer.update(
-                current_parameters,
-                gradient
-            )
-            
-            # Record optimization step
-            self._record_optimization_step(step, current_cost, current_parameters)
-            
-        # Generate final results
-        optimized_ansatz = self._generate_optimized_circuit(best_parameters)
-        
-        return {
-            'optimized_parameters': best_parameters,
-            'final_cost': best_cost,
-            'optimization_steps': step + 1,
-            'optimization_history': self.optimization_history,
-            'optimized_ansatz': optimized_ansatz
-        }
-        
-    def _evaluate_circuit(self, parameters: np.ndarray) -> np.ndarray:
-        """
-        Evaluate quantum circuit with given parameters.
-        
-        Args:
-            parameters: Circuit parameters
-            
-        Returns:
-            np.ndarray: Circuit unitary matrix
-        """
-        # Reset quantum register
-        self.quantum_register = QuantumRegister(self.config.n_qubits)
-        
-        # Apply optimization circuit
-        self.optimization_circuit.apply(
-            self.quantum_register,
-            parameters
-        )
-        
-        # Get final state
-        return self.quantum_register.get_unitary()
-        
-    def _evaluate_ansatz(self, parameters: np.ndarray) -> np.ndarray:
-        """
-        Evaluate quantum ansatz with given parameters.
-        
-        Args:
-            parameters: Ansatz parameters
-            
-        Returns:
-            np.ndarray: Quantum state vector
-        """
-        # Reset quantum register
-        self.quantum_register = QuantumRegister(self.config.n_qubits)
-        
-        # Apply optimization circuit
-        self.optimization_circuit.apply(
-            self.quantum_register,
-            parameters
-        )
-        
-        # Get final state
-        return self.quantum_register.measure()
-        
-    def _calculate_fidelity(self, current_unitary: np.ndarray,
-                          target_unitary: np.ndarray) -> float:
-        """
-        Calculate fidelity between current and target unitaries.
-        
-        Args:
-            current_unitary: Current unitary matrix
-            target_unitary: Target unitary matrix
-            
-        Returns:
-            float: Fidelity measure
-        """
-        product = np.dot(current_unitary.conj().T, target_unitary)
-        trace = np.trace(product)
-        dimension = len(target_unitary)
-        
-        fidelity = np.abs(trace) / dimension
-        return fidelity
-        
-    def _calculate_gradient(self, parameters: np.ndarray,
-                          target_unitary: np.ndarray) -> np.ndarray:
-        """
-        Calculate gradient for circuit optimization.
-        
-        Args:
-            parameters: Current parameters
-            target_unitary: Target unitary
-            
-        Returns:
-            np.ndarray: Parameter gradients
-        """
-        gradients = np.zeros_like(parameters)
-        epsilon = 1e-7
-        
-        for i in range(len(parameters)):
-            # Calculate positive shift
-            params_plus = parameters.copy()
-            params_plus[i] += epsilon
-            unitary_plus = self._evaluate_circuit(params_plus)
-            fidelity_plus = self._calculate_fidelity(unitary_plus, target_unitary)
-            
-            # Calculate negative shift
-            params_minus = parameters.copy()
-            params_minus[i] -= epsilon
-            unitary_minus = self._evaluate_circuit(params_minus)
-            fidelity_minus = self._calculate_fidelity(unitary_minus, target_unitary)
-            
-            # Calculate gradient
-            gradients[i] = (fidelity_plus - fidelity_minus) / (2 * epsilon)
-            
-        return gradients
-        
-    def _calculate_ansatz_gradient(self, parameters: np.ndarray,
-                                 cost_function: callable) -> np.ndarray:
-        """
-        Calculate gradient for ansatz optimization.
-        
-        Args:
-            parameters: Current parameters
-            cost_function: Cost function
-            
-        Returns:
-            np.ndarray: Parameter gradients
-        """
-        gradients = np.zeros_like(parameters)
-        epsilon = 1e-7
-        
-        for i in range(len(parameters)):
-            # Calculate positive shift
-            params_plus = parameters.copy()
-            params_plus[i] += epsilon
-            state_plus = self._evaluate_ansatz(params_plus)
-            cost_plus = cost_function(state_plus)
-            
-            # Calculate negative shift
-            params_minus = parameters.copy()
-            params_minus[i] -= epsilon
-            state_minus = self._evaluate_ansatz(params_minus)
-            cost_minus = cost_function(state_minus)
-            
-            # Calculate gradient
-            gradients[i] = (cost_plus - cost_minus) / (2 * epsilon)
-            
-        return gradients
-        
-    def _record_optimization_step(self, step: int, metric: float,
-                                parameters: np.ndarray) -> None:
-        """
-        Record optimization step information.
-        
-        Args:
-            step: Optimization step
-            metric: Performance metric
-            parameters: Current parameters
-        """
-        self.optimization_history.append({
-            'step': step,
-            'metric': metric,
-            'parameters': parameters.copy()
-        })
-        
-    def _generate_optimized_circuit(self, parameters: np.ndarray) -> Dict[str, Any]:
-        """
-        Generate optimized circuit description.
-        
-        Args:
-            parameters: Optimized parameters
-            
-        Returns:
-            Dict[str, Any]: Circuit description
-        """
-        return {
-            'n_qubits': self.config.n_qubits,
-            'depth': self.optimization_circuit.depth,
-            'n_gates': self.optimization_circuit.n_gates,
-            'parameters': parameters.tolist(),
-            'circuit_description': self.optimization_circuit.get_description(parameters)
-        }
-        
-    def analyze_circuit(self, parameters: np.ndarray) -> Dict[str, Any]:
-        """
-        Analyze optimized circuit properties.
-        
-        Args:
-            parameters: Circuit parameters
-            
-        Returns:
-            Dict[str, Any]: Circuit analysis
-        """
-        # Evaluate circuit
-        unitary = self._evaluate_circuit(parameters)
-        
-        # Calculate circuit properties
-        properties = {
-            'depth': self.optimization_circuit.depth,
-            'n_gates': self.optimization_circuit.n_gates,
-            'n_parameters': len(parameters),
-            'gate_types': self.optimization_circuit.get_gate_counts(),
-            'unitarity': self._check_unitarity(unitary),
-            'condition_number': self._calculate_condition_number(unitary)
-        }
-        
-        return properties
-        
-    def _check_unitarity(self, matrix: np.ndarray) -> float:
-        """
-        Check unitarity of matrix.
-        
-        Args:
-            matrix: Matrix to check
-            
-        Returns:
-            float: Unitarity measure
-        """
-        product = np.dot(matrix.conj().T, matrix)
-        identity = np.eye(len(matrix))
-        return np.linalg.norm(product - identity)
-        
-    def _calculate_condition_number(self, matrix: np.ndarray) -> float:
-        """
-        Calculate matrix condition number.
-        
-        Args:
-            matrix: Matrix to analyze
-            
-        Returns:
-            float: Condition number
-        """
-        singular_values = np.linalg.svd(matrix, compute_uv=False)
-        return np.max(singular_values) / np.min(singular_values)
-        
-    def save_state(self, path: str) -> None:
-        """
-        Save optimizer state.
-        
-        Args:
-            path: Save file path
-        """
-        state = {
-            'config': self.config.__dict__,
-            'optimization_history': self.optimization_history,
-            'circuit_state': self.optimization_circuit.get_state(),
-            'optimizer_state': self.parameter_optimizer.get_state()
-        }
-        torch.save(state, path)
-        
-    @classmethod
-    def load_state(cls, path: str) -> 'QuantumCircuitOptimizer':
-        """
-        Load optimizer from state.
-        
-        Args:
-            path: Load file path
-            
-        Returns:
-            QuantumCircuitOptimizer: Loaded optimizer
-        """
-        state = torch.load(path)
-        config = CircuitOptimizationConfig(**state['config'])
-        
-        optimizer = cls(config)
-        optimizer.optimization_history = state['optimization_history']
-        optimizer.optimization_circuit.load_state(state['circuit_state'])
-        optimizer.parameter_optimizer.load_state(state['optimizer_state'])
-        
-        return optimizer

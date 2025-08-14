@@ -5,6 +5,7 @@ from .quantum_block import QuantumBlock
 from ..utils.cryptography import QuantumSignature, QuantumHash
 from ...quantum.core.quantum_register import QuantumRegister
 from ...quantum.utils.gates import QuantumGate, GateType
+from .token_system import QuantumTokenSystem, TokenType, TokenTransaction
 
 class QuantumBlockchain:
     """
